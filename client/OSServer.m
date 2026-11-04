@@ -784,6 +784,7 @@ static int os_client_request(OSIdentity *identity, mbedtls_ssl_config *config,
     char line[512];
     int status = 0;
     long long contentLength = -1;
+    int chunked = 0;
 
     fd = os_tcp_connect(ip, port, 5000);
     if (fd < 0) return -1;
@@ -889,10 +890,22 @@ static int os_client_request(OSIdentity *identity, mbedtls_ssl_config *config,
     while (os_read_line(&ssl, line, sizeof line) > 0) {
         if (strncasecmp(line, "Content-Length:", 15) == 0) {
             contentLength = strtoll(line + 15, NULL, 10);
+        } else if (strncasecmp(line, "Transfer-Encoding:", 18) == 0 && strcasestr(line, "chunked") != NULL) {
+            chunked = 1;
         }
     }
 
-    if (response != nil && contentLength > 0 && contentLength < 2 * 1024 * 1024) {
+    /* LocalSend 1.x on desktop (Dart's HTTP server) answers with Transfer-Encoding: chunked and no
+       Content-Length. Without decoding that, the prepare-upload reply (sessionId + tokens) came back
+       empty and every send to a desktop failed with "Send prepare failed". */
+    if (response != nil && chunked) {
+        unsigned char *decoded = NULL;
+        size_t decodedLength = 0;
+        if (os_read_chunked_alloc(&ssl, &decoded, &decodedLength) == 0) {
+            [response appendBytes:decoded length:decodedLength];
+            free(decoded);
+        }
+    } else if (response != nil && contentLength > 0 && contentLength < 2 * 1024 * 1024) {
         long long left = contentLength;
         unsigned char buffer[4096];
         while (left > 0) {
@@ -901,6 +914,14 @@ static int os_client_request(OSIdentity *identity, mbedtls_ssl_config *config,
             if (got <= 0) break;
             [response appendBytes:buffer length:(NSUInteger)got];
             left -= got;
+        }
+    } else if (response != nil && contentLength < 0) {
+        /* Neither a length nor chunked: the body ends when the server closes (we send Connection: close). */
+        unsigned char buffer[4096];
+        while ([response length] < 2 * 1024 * 1024) {
+            int got = mbedtls_ssl_read(&ssl, buffer, sizeof buffer);
+            if (got <= 0) break;
+            [response appendBytes:buffer length:(NSUInteger)got];
         }
     }
 

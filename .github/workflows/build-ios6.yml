@@ -1,0 +1,48 @@
+name: Build (iOS 6, armv7)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    env:
+      THEOS: ${{ github.workspace }}/.theos-tc
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the iOS toolchain, the iOS 9.3 SDK (armv7) and ldid
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xz-utils libtinfo6 dpkg
+          mkdir -p "$THEOS/toolchain" "$THEOS/sdks"
+          curl -fsSL https://github.com/L1ghtmann/llvm-project/releases/download/main-update_3-eabca92/iOSToolchain-x86_64.tar.xz | tar -xJ -C "$THEOS/toolchain/"
+          curl -fsSL https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS9.3.sdk.tar.xz | tar -xJ -C "$THEOS/sdks/"
+          # libSystem re-exports liblaunch, but this SDK has no stub for it; nothing here uses it.
+          printf '%s\n' '---' 'archs:                 [ armv7, armv7s, arm64, i386, x86_64 ]' 'platform:              ios' \
+            'install-name:          /usr/lib/system/liblaunch.dylib' 'current-version:       1' 'compatibility-version: 1' \
+            '...' > "$THEOS/sdks/iPhoneOS9.3.sdk/usr/lib/system/liblaunch.tbd"
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL -o "$HOME/.local/bin/ldid" https://github.com/ProcursusTeam/ldid/releases/download/v2.1.5-procursus7/ldid_linux_x86_64
+          chmod +x "$HOME/.local/bin/ldid"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Build
+        run: bash ci/build-ios6.sh
+
+      - name: Check the binaries
+        run: |
+          for f in build-ios6/OldSend.app/OldSend build-ios6/OldSend.app/MediaPicker.dylib; do
+            echo "== $f"
+            "$THEOS/toolchain/linux/iphone/bin/lipo" -info "$f"
+            "$THEOS/toolchain/linux/iphone/bin/otool" -l "$f" | grep -A3 LC_VERSION_MIN_IPHONEOS | grep version
+            "$THEOS/toolchain/linux/iphone/bin/otool" -L "$f" | tail -n +2
+          done
+          dpkg-deb -c packages/*.deb | head -20
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb
+          path: packages/*.deb
