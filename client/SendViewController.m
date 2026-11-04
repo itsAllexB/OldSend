@@ -7,7 +7,9 @@
 #include <math.h>
 
 /* iPhoneOS 3.1.3 SDK predates the iPad; UIPopoverController is declared here
-   and only instantiated via NSClassFromString on iPad at runtime. */
+   and only instantiated via NSClassFromString on iPad at runtime.
+   Newer SDKs (iOS 3.2+) declare it themselves, so the declaration is only needed with old ones. */
+#if !defined(__IPHONE_3_2)
 @interface UIPopoverController : NSObject
 - (id)initWithContentViewController:(UIViewController *)viewController;
 - (void)presentPopoverFromRect:(CGRect)rect
@@ -17,6 +19,7 @@
 - (void)dismissPopoverAnimated:(BOOL)animated;
 @property (nonatomic, assign) id delegate;
 @end
+#endif
 
 @interface UIActionSheet (OSPad)
 - (void)showFromBarButtonItem:(UIBarButtonItem *)item animated:(BOOL)animated;

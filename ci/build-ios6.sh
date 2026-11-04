@@ -23,18 +23,11 @@ CFLAGS=(-target "armv7-apple-ios$MIN" -isysroot "$SDK" -O2 -marm -mno-thumb
         -Iclient -Ivendor -Ivendor/mbedtls/include
         -Wno-deprecated-declarations -Wno-unused-command-line-argument)
 
-compile() {  # source -> object
-    local src=$1 obj="$OBJ/$(echo "$1" | tr '/' '_').o"
-    "$CC" "${CFLAGS[@]}" -c "$src" -o "$obj"
-    echo "$obj"
-}
-export -f compile
-export CC OBJ
-export CFLAGS_STR="${CFLAGS[*]}"
-
 objs=()
 for src in client/*.m vendor/cJSON.c vendor/mbedtls/library/*.c; do
-    objs+=("$(compile "$src")")
+    obj="$OBJ/$(echo "$src" | tr '/' '_').o"
+    "$CC" "${CFLAGS[@]}" -c "$src" -o "$obj"
+    objs+=("$obj")
 done
 
 "$CC" "${CFLAGS[@]}" "${objs[@]}" \
