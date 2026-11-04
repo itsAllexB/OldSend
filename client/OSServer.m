@@ -1,5 +1,6 @@
 #import "OSServer.h"
 #import "OSHUD.h"
+#import "OSTransfer.h"
 #import <UIKit/UIKit.h>
 
 #include <sys/types.h>
@@ -63,6 +64,7 @@ typedef struct {
     char sha256[65];
     int uploaded;
     int isMessage;
+    int transferIndex;  /* row on the transfer screen; -1 for text messages, which are not listed */
 } OSFileEntry;
 
 typedef struct {
@@ -84,6 +86,7 @@ typedef struct {
 static OSSession gSession;
 static char gLastSessionId[40];
 static volatile BOOL gCancelSend = NO;
+static volatile BOOL gCancelReceive = NO;
 static volatile int gSendFD = -1;
 
 static void os_file_log(NSString *line) {
@@ -102,6 +105,9 @@ static void os_logf(OSServer *server, NSString *fmt, ...) {
     [server appendLog:line];
     [line release];
 }
+
+static int os_open_listener(OSServer *server, BOOL log);
+static int os_open_discovery_socket(OSServer *server, BOOL log);
 
 static NSString *os_json_escape(NSString *value) {
     if (value == nil) return @"";
@@ -498,6 +504,7 @@ typedef void (*OSProgressCallback)(void *context, long long written, long long t
 typedef struct {
     OSServer *server;
     long long lastReported;
+    int transferIndex;
 } OSProgressContext;
 
 static void os_progress_cb(void *context, long long written, long long total) {
@@ -508,7 +515,8 @@ static void os_progress_cb(void *context, long long written, long long total) {
     progress->lastReported = written;
     info = [NSArray arrayWithObjects:
             [NSNumber numberWithLongLong:written],
-            [NSNumber numberWithLongLong:total], nil];
+            [NSNumber numberWithLongLong:total],
+            [NSNumber numberWithInt:progress->transferIndex], nil];
     [progress->server performSelectorOnMainThread:@selector(updateUploadProgressInfo:)
                                        withObject:info
                                     waitUntilDone:NO];
@@ -543,6 +551,7 @@ static int os_stream_body(mbedtls_ssl_context *ssl, OSRequest *request, FILE *fi
                 size_t left = chunkSize;
                 while (left > 0) {
                     size_t want = left > sizeof buffer ? sizeof buffer : left;
+                    if (gCancelReceive) return -1;
                     if (os_ssl_read_exact(ssl, buffer, want) != 0) return -1;
                     if (fwrite(buffer, 1, want, file) != want) return -1;
                     mbedtls_sha256_update_ret(sha, buffer, want);
@@ -563,6 +572,7 @@ static int os_stream_body(mbedtls_ssl_context *ssl, OSRequest *request, FILE *fi
         long long left = request->contentLength;
         while (left > 0) {
             size_t want = left > (long long)sizeof buffer ? sizeof buffer : (size_t)left;
+            if (gCancelReceive) return -1;
             if (os_ssl_read_exact(ssl, buffer, want) != 0) return -1;
             if (fwrite(buffer, 1, want, file) != want) return -1;
             mbedtls_sha256_update_ret(sha, buffer, want);
@@ -748,6 +758,7 @@ typedef struct {
     long long base;
     long long total;
     long long lastReported;
+    int transferIndex;
 } OSSendProgressContext;
 
 static void os_send_progress_cb(void *context, long long written, long long total) {
@@ -762,6 +773,11 @@ static void os_send_progress_cb(void *context, long long written, long long tota
         return;
     }
     progress->lastReported = overallWritten;
+    [progress->server performSelectorOnMainThread:@selector(sendTransferEvent:)
+                                       withObject:[NSArray arrayWithObjects:@"progress",
+                                                   [NSNumber numberWithInt:progress->transferIndex],
+                                                   [NSNumber numberWithLongLong:written], nil]
+                                    waitUntilDone:NO];
     value = [NSNumber numberWithFloat:(float)((double)overallWritten /
                                               (double)progress->total)];
     [progress->server performSelectorOnMainThread:@selector(deliverSendProgress:)
@@ -988,9 +1004,99 @@ static NSString *os_unique_path(NSString *directory, NSString *name) {
 - (void)showReceiveCompleteAlert:(NSNumber *)count;
 - (void)queueReceiveCompleteAlert:(NSNumber *)count;
 - (void)showPendingReceiveCompleteAlert;
+- (void)sendTransferEvent:(NSArray *)event;
+- (void)receiveTransferEvent:(NSArray *)event;
 @end
 
 @implementation OSServer
+
+#pragma mark Transfer screen
+
+/* The transfer screen's model is only touched on the main thread. The network threads report
+   through these methods with performSelectorOnMainThread, which keeps their events in order.
+   Start: [alias, deviceType, files]. Events: [kind, index, bytes] with kind "start", "progress",
+   "finish" or "skip". End: [state, message]. */
+
+- (OSTransfer *)startTransferSending:(BOOL)sending info:(NSArray *)info {
+    OSTransfer *transfer = [[OSTransfer alloc] initSending:sending
+                                                      peer:[info objectAtIndex:0]
+                                                      type:[info objectAtIndex:1]
+                                                     files:[info objectAtIndex:2]];
+    [[NSNotificationCenter defaultCenter] postNotificationName:OSTransferDidStartNotification
+                                                        object:transfer];
+    return transfer;
+}
+
+static void os_apply_transfer_event(OSTransfer *transfer, NSArray *event) {
+    NSString *kind = [event objectAtIndex:0];
+    NSInteger index = [[event objectAtIndex:1] integerValue];
+
+    if (transfer == nil || index < 0) return;
+    if ([kind isEqualToString:@"progress"]) {
+        [transfer file:index wrote:[[event objectAtIndex:2] longLongValue]];
+    } else if ([kind isEqualToString:@"start"]) {
+        [transfer fileStarted:index];
+    } else if ([kind isEqualToString:@"finish"]) {
+        [transfer fileFinished:index];
+    } else if ([kind isEqualToString:@"skip"]) {
+        [transfer fileSkipped:index];
+    }
+}
+
+- (void)startSendTransfer:(NSArray *)info {
+    [_sendTransfer release];
+    _sendTransfer = [self startTransferSending:YES info:info];
+}
+
+- (void)sendTransferEvent:(NSArray *)event {
+    os_apply_transfer_event(_sendTransfer, event);
+}
+
+- (void)sendTransferRunning {
+    [_sendTransfer setRunning];
+}
+
+- (void)endSendTransfer:(NSArray *)info {
+    NSString *message = [info count] > 1 ? [info objectAtIndex:1] : nil;
+    [_sendTransfer endWithState:(OSTransferState)[[info objectAtIndex:0] intValue]
+                        message:[message length] > 0 ? message : nil];
+}
+
+- (void)startReceiveTransfer:(NSArray *)info {
+    [_receiveTransfer release];
+    _receiveTransfer = [self startTransferSending:NO info:info];
+}
+
+- (void)receiveTransferEvent:(NSArray *)event {
+    os_apply_transfer_event(_receiveTransfer, event);
+}
+
+- (void)endReceiveTransfer:(NSArray *)info {
+    NSString *message = [info count] > 1 ? [info objectAtIndex:1] : nil;
+    [_receiveTransfer endWithState:(OSTransferState)[[info objectAtIndex:0] intValue]
+                           message:[message length] > 0 ? message : nil];
+}
+
+- (void)clearReceiveTransfer {
+    [_receiveTransfer release];
+    _receiveTransfer = nil;
+}
+
+/* YES while the current (or last) receive session has a transfer screen, which then shows the
+   result instead of the "Receive Complete" / "Transfer Interrupted" alerts. */
+- (BOOL)receiveTransferShown {
+    return _receiveTransfer != nil;
+}
+
+- (void)cancelReceiving {
+    /* The upload loop checks the flag between reads; later uploads of this session get 403. */
+    gCancelReceive = YES;
+    gSession.active = 0;
+    gSession.remaining = 0;
+    [_receiveTransfer endWithState:OSTransferStateCancelled message:nil];
+    [self setSessionActiveFlag:[NSNumber numberWithBool:NO]];
+    os_logf(self, @"Receiver cancelled the session");
+}
 
 + (OSServer *)shared {
     static OSServer *shared = nil;
@@ -1290,6 +1396,10 @@ static NSString *os_unique_path(NSString *directory, NSString *name) {
     long long written = [[info objectAtIndex:0] longLongValue];
     long long total = [[info objectAtIndex:1] longLongValue];
 
+    if ([info count] > 2) {
+        [self receiveTransferEvent:[NSArray arrayWithObjects:@"progress", [info objectAtIndex:2],
+                                    [info objectAtIndex:0], nil]];
+    }
     if (_savingCount > 0) return;
     _receiving = YES;
     _currentFileWritten = written;
@@ -1332,6 +1442,7 @@ static NSString *os_unique_path(NSString *directory, NSString *name) {
                             waitUntilDone:NO];
         return;
     }
+    if ([self receiveTransferShown]) return;  /* the transfer screen says "Finished" */
     _pendingReceiveCompleteCount = [count integerValue];
     [self showPendingReceiveCompleteAlert];
 }
@@ -1403,7 +1514,13 @@ static NSString *os_unique_path(NSString *directory, NSString *name) {
                                                         object:self];
     [self stopReceiveWatchdog];
     [self setReceiveStatusText:NSLocalizedString(@"status.transfer_interrupted", nil)];
-    [self showTransferFailedAlert];
+    if ([self receiveTransferShown]) {
+        /* Shown on the transfer screen (which keeps "cancelled" if the user cancelled). */
+        [_receiveTransfer endWithState:OSTransferStateFailed
+                               message:NSLocalizedString(@"receive.interrupted_message", nil)];
+    } else {
+        [self showTransferFailedAlert];
+    }
     [NSObject cancelPreviousPerformRequestsWithTarget:self
                                              selector:@selector(clearFailureStatus)
                                                object:nil];
@@ -1485,6 +1602,8 @@ static NSString *os_unique_path(NSString *directory, NSString *name) {
 }
 
 - (void)handleCancelledSession {
+    [_receiveTransfer endWithState:OSTransferStateCancelled
+                           message:NSLocalizedString(@"transfer.sender_cancelled", nil)];
     [self setSessionActiveFlag:[NSNumber numberWithBool:NO]];
     [self resetReceivedTexts];
 }
@@ -1691,10 +1810,9 @@ static NSString *os_unique_path(NSString *directory, NSString *name) {
 - (void)discoveryThreadMain {
     NSAutoreleasePool *outerPool = [[NSAutoreleasePool alloc] init];
     OSIdentity *identity = (OSIdentity *)_identity;
-    int fd;
-    int one = 1;
-    struct timeval timeout;
-    struct ip_mreq membership;
+    int fd = -1;
+    NSUInteger generation = 0;
+    int failures = 0;
     mbedtls_entropy_context entropy;
     mbedtls_ctr_drbg_context drbg;
     mbedtls_ssl_config config;
@@ -1706,38 +1824,6 @@ static NSString *os_unique_path(NSString *directory, NSString *name) {
 
     OSCacheEntry cache[16];
     memset(cache, 0, sizeof cache);
-
-    fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd < 0) {
-        [outerPool release];
-        return;
-    }
-
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
-    setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &one, sizeof one);
-
-    {
-        struct sockaddr_in address;
-        memset(&address, 0, sizeof address);
-        address.sin_family = AF_INET;
-        address.sin_addr.s_addr = htonl(INADDR_ANY);
-        address.sin_port = htons(OS_PORT);
-        if (bind(fd, (struct sockaddr *)&address, sizeof address) != 0) {
-            os_logf(self, @"Multicast bind failed: %s", strerror(errno));
-            close(fd);
-            [outerPool release];
-            return;
-        }
-    }
-
-    memset(&membership, 0, sizeof membership);
-    membership.imr_multiaddr.s_addr = inet_addr("224.0.0.167");
-    membership.imr_interface.s_addr = htonl(INADDR_ANY);
-    setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &membership, sizeof membership);
-
-    timeout.tv_sec = 1;
-    timeout.tv_usec = 0;
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout);
 
     mbedtls_entropy_init(&entropy);
     mbedtls_ctr_drbg_init(&drbg);
@@ -1763,7 +1849,6 @@ static NSString *os_unique_path(NSString *directory, NSString *name) {
         }
         if (ret != 0) {
             os_logf(self, @"Discovery init failed (%d)", ret);
-            close(fd);
             mbedtls_ssl_config_free(&config);
             mbedtls_ctr_drbg_free(&drbg);
             mbedtls_entropy_free(&entropy);
@@ -1779,8 +1864,30 @@ static NSString *os_unique_path(NSString *directory, NSString *name) {
         char buffer[65536];
         struct sockaddr_in from;
         socklen_t fromLength = sizeof from;
-        int length = (int)recvfrom(fd, buffer, sizeof buffer - 1, 0,
-                                   (struct sockaddr *)&from, &fromLength);
+        int length;
+
+        /* Like the TCP listener: reopen (and rejoin the multicast group) after a failure or
+           when the app returns to the foreground, possibly on a different network. */
+        if (fd < 0 || generation != _networkGeneration) {
+            if (fd >= 0) close(fd);
+            generation = _networkGeneration;
+            fd = os_open_discovery_socket(self, failures == 0);
+            if (fd < 0) {
+                failures++;
+                [pool release];
+                sleep(1);
+                continue;
+            }
+            failures = 0;
+        }
+
+        length = (int)recvfrom(fd, buffer, sizeof buffer - 1, 0,
+                               (struct sockaddr *)&from, &fromLength);
+        if (length < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+            os_logf(self, @"Discovery socket failed (%s), opening it again", strerror(errno));
+            close(fd);
+            fd = -1;
+        }
 
         if (length > 0) {
             char peerIP[INET_ADDRSTRLEN] = "?";
@@ -1884,7 +1991,7 @@ static NSString *os_unique_path(NSString *directory, NSString *name) {
         [pool release];
     }
 
-    close(fd);
+    if (fd >= 0) close(fd);
     mbedtls_ssl_config_free(&config);
     mbedtls_ctr_drbg_free(&drbg);
     mbedtls_entropy_free(&entropy);
@@ -1957,6 +2064,84 @@ static NSString *os_unique_path(NSString *directory, NSString *name) {
     _announceTimer = nil;
 }
 
+/* Opens the TCP listening socket on OS_PORT; -1 on failure (logged when `log` is set). */
+static int os_open_listener(OSServer *server, BOOL log) {
+    struct sockaddr_in addr;
+    int one = 1;
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (fd < 0) {
+        if (log) os_logf(server, @"socket() failed: %s", strerror(errno));
+        return -1;
+    }
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+
+    memset(&addr, 0, sizeof addr);
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_port = htons(OS_PORT);
+    if (bind(fd, (struct sockaddr *)&addr, sizeof addr) != 0) {
+        if (log) os_logf(server, @"Bind to port %d failed: %s", OS_PORT, strerror(errno));
+        close(fd);
+        return -1;
+    }
+    if (listen(fd, 8) != 0) {
+        if (log) os_logf(server, @"listen() failed: %s", strerror(errno));
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+/* Opens the UDP socket for LocalSend multicast discovery (224.0.0.167:OS_PORT); -1 on failure. */
+static int os_open_discovery_socket(OSServer *server, BOOL log) {
+    struct sockaddr_in address;
+    struct ip_mreq membership;
+    struct timeval timeout;
+    int one = 1;
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+
+    if (fd < 0) return -1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+    setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &one, sizeof one);
+
+    memset(&address, 0, sizeof address);
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_ANY);
+    address.sin_port = htons(OS_PORT);
+    if (bind(fd, (struct sockaddr *)&address, sizeof address) != 0) {
+        if (log) os_logf(server, @"Multicast bind failed: %s", strerror(errno));
+        close(fd);
+        return -1;
+    }
+
+    memset(&membership, 0, sizeof membership);
+    membership.imr_multiaddr.s_addr = inet_addr("224.0.0.167");
+    membership.imr_interface.s_addr = htonl(INADDR_ANY);
+    setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &membership, sizeof membership);
+
+    timeout.tv_sec = 1;
+    timeout.tv_usec = 0;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout);
+    return fd;
+}
+
+- (void)resume {
+    NSString *ip;
+
+    if (!_running) return;
+    ip = [OSServer localIPAddress];
+    if (ip != nil && ![ip isEqualToString:_localIP]) {
+        [_localIP release];
+        _localIP = [ip copy];
+    }
+    /* The network threads reopen their sockets when they see a new generation. */
+    _networkGeneration++;
+    os_logf(self, @"Back in the foreground, reopening sockets");
+    [self announceNow];
+    [[NSNotificationCenter defaultCenter] postNotificationName:OSServerDidUpdateNotification object:self];
+}
+
 - (void)serverThreadMain {
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
     [self runServer];
@@ -1992,56 +2177,66 @@ static NSString *os_unique_path(NSString *directory, NSString *name) {
         return;
     }
 
-    int listenFD = socket(AF_INET, SOCK_STREAM, 0);
-    if (listenFD < 0) {
-        os_logf(self, @"socket() failed: %s", strerror(errno));
-        mbedtls_ssl_config_free(&conf);
-        return;
-    }
-
-    int one = 1;
-    setsockopt(listenFD, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
-
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof addr);
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    addr.sin_port = htons(OS_PORT);
-
-    if (bind(listenFD, (struct sockaddr *)&addr, sizeof addr) != 0) {
-        os_logf(self, @"Bind to port %d failed: %s", OS_PORT, strerror(errno));
-        close(listenFD);
-        mbedtls_ssl_config_free(&conf);
-        return;
-    }
-
-    if (listen(listenFD, 8) != 0) {
-        os_logf(self, @"listen() failed: %s", strerror(errno));
-        close(listenFD);
-        mbedtls_ssl_config_free(&conf);
-        return;
-    }
-
-    os_logf(self, @"TLS server listening on %@:%d", _localIP, OS_PORT);
+    /* iOS reclaims the sockets of a suspended app, after which accept() fails for good. So the
+       listening socket is opened again whenever it fails, and whenever the app comes back to the
+       foreground (resume bumps _networkGeneration); select() with a timeout lets the loop notice. */
+    int listenFD = -1;
+    NSUInteger generation = 0;
+    int failures = 0;
 
     while (_running) {
+        NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
         struct sockaddr_in peer;
         socklen_t peerLen = sizeof peer;
-        int clientFD = accept(listenFD, (struct sockaddr *)&peer, &peerLen);
-        if (clientFD < 0) {
-            if (errno == EINTR) continue;
-            os_logf(self, @"accept() failed: %s", strerror(errno));
-            break;
+        fd_set readable;
+        struct timeval wait;
+        int clientFD;
+        int ready;
+
+        if (listenFD < 0 || generation != _networkGeneration) {
+            if (listenFD >= 0) close(listenFD);
+            generation = _networkGeneration;
+            listenFD = os_open_listener(self, failures == 0);
+            if (listenFD < 0) {
+                failures++;
+                [pool release];
+                sleep(1);
+                continue;
+            }
+            failures = 0;
+            os_logf(self, @"TLS server listening on %@:%d", _localIP, OS_PORT);
         }
 
-        char peerIP[INET_ADDRSTRLEN] = "?";
-        inet_ntop(AF_INET, &peer.sin_addr, peerIP, sizeof peerIP);
+        FD_ZERO(&readable);
+        FD_SET(listenFD, &readable);
+        wait.tv_sec = 1;
+        wait.tv_usec = 0;
+        ready = select(listenFD + 1, &readable, NULL, NULL, &wait);
+        if (ready == 0 || (ready < 0 && errno == EINTR)) {
+            [pool release];
+            continue;
+        }
+        clientFD = ready > 0 ? accept(listenFD, (struct sockaddr *)&peer, &peerLen) : -1;
+        if (clientFD < 0) {
+            if (errno != EINTR) {
+                os_logf(self, @"Listening socket failed (%s), opening it again", strerror(errno));
+                close(listenFD);
+                listenFD = -1;
+            }
+            [pool release];
+            continue;
+        }
 
-        [self handleClient:clientFD peer:peerIP config:&conf];
+        {
+            char peerIP[INET_ADDRSTRLEN] = "?";
+            inet_ntop(AF_INET, &peer.sin_addr, peerIP, sizeof peerIP);
+            [self handleClient:clientFD peer:peerIP config:&conf];
+        }
         close(clientFD);
+        [pool release];
     }
 
-    close(listenFD);
+    if (listenFD >= 0) close(listenFD);
     mbedtls_ssl_config_free(&conf);
     os_logf(self, @"TLS server stopped");
 }
@@ -2226,6 +2421,8 @@ static NSString *os_unique_path(NSString *directory, NSString *name) {
     NSString *errorMessage = nil;
     BOOL success = NO;
     BOOL cancelled = NO;
+    BOOL declined = NO;
+    BOOL transferStarted = NO;
     NSString *sessionIdString = nil;
     long long totalBytes = 0;
     long long uploadedBase = 0;
@@ -2322,6 +2519,27 @@ static NSString *os_unique_path(NSString *directory, NSString *name) {
     }
 
     {
+        NSMutableArray *transferFiles = [NSMutableArray arrayWithCapacity:[files count]];
+        NSString *alias = [device objectForKey:@"alias"];
+        NSString *deviceType = [device objectForKey:@"type"];
+
+        for (NSDictionary *file in files) {
+            /* Text messages are listed under a readable name instead of their random id. */
+            NSString *name = [[file objectForKey:@"temp"] boolValue]
+                           ? NSLocalizedString(@"transfer.text_item", nil) : [file objectForKey:@"name"];
+            [transferFiles addObject:[NSDictionary dictionaryWithObjectsAndKeys:
+                                      name, @"name", [file objectForKey:@"size"], @"size", nil]];
+        }
+        [self performSelectorOnMainThread:@selector(startSendTransfer:)
+                               withObject:[NSArray arrayWithObjects:
+                                           alias != nil ? alias : @"",
+                                           deviceType != nil ? deviceType : @"",
+                                           transferFiles, nil]
+                            waitUntilDone:YES];
+        transferStarted = YES;
+    }
+
+    {
         static const unsigned char personalization[] = "oldsend-send";
         int ret = mbedtls_ctr_drbg_seed(&drbg, mbedtls_entropy_func, &entropy,
                                         personalization, sizeof personalization - 1);
@@ -2389,9 +2607,23 @@ static NSString *os_unique_path(NSString *directory, NSString *name) {
             cancelled = YES;
             goto cleanup;
         }
+        if (result == 0 && status == 204) {
+            /* LocalSend: the receiver needs none of the files. */
+            os_logf(self, @"Receiver needs no files");
+            success = YES;
+            goto cleanup;
+        }
+        if (result == 0 && status == 403) {
+            os_logf(self, @"Receiver declined");
+            declined = YES;
+            goto cleanup;
+        }
         if (result != 0 || status != 200) {
             os_logf(self, @"Send prepare failed (rc=%d, status=%d)", result, status);
-            errorMessage = NSLocalizedString(@"send.failed_message", nil);
+            errorMessage = result == 0 && status == 409
+                         ? [NSString stringWithFormat:NSLocalizedString(@"transfer.busy", nil),
+                            [device objectForKey:@"alias"]]
+                         : NSLocalizedString(@"send.failed_message", nil);
             goto cleanup;
         }
 
@@ -2407,16 +2639,30 @@ static NSString *os_unique_path(NSString *directory, NSString *name) {
                 goto cleanup;
             }
 
-            for (NSDictionary *file in files) {
-                NSString *fileId = [file objectForKey:@"id"];
-                cJSON *tokenItem = cJSON_GetObjectItem(filesItem, [fileId UTF8String]);
-                if (!cJSON_IsString(tokenItem) || tokenItem->valuestring == NULL) {
-                    cJSON_Delete(responseRoot);
-                    errorMessage = NSLocalizedString(@"send.failed_message", nil);
-                    goto cleanup;
+            /* The receiver may accept only some of the files (LocalSend lets the user untick
+               files); the others get no token and are skipped. */
+            {
+                NSInteger index = 0;
+                for (NSDictionary *file in files) {
+                    NSString *fileId = [file objectForKey:@"id"];
+                    cJSON *tokenItem = cJSON_GetObjectItem(filesItem, [fileId UTF8String]);
+                    if (!cJSON_IsString(tokenItem) || tokenItem->valuestring == NULL) {
+                        [self performSelectorOnMainThread:@selector(sendTransferEvent:)
+                                               withObject:[NSArray arrayWithObjects:@"skip",
+                                                           [NSNumber numberWithInteger:index], nil]
+                                            waitUntilDone:NO];
+                        totalBytes -= [[file objectForKey:@"size"] longLongValue];
+                    } else {
+                        [tokens setObject:[NSString stringWithUTF8String:tokenItem->valuestring]
+                                   forKey:fileId];
+                    }
+                    index++;
                 }
-                [tokens setObject:[NSString stringWithUTF8String:tokenItem->valuestring]
-                           forKey:fileId];
+            }
+            if ([tokens count] == 0) {
+                cJSON_Delete(responseRoot);
+                declined = YES;
+                goto cleanup;
             }
 
             sessionIdString = [[NSString stringWithUTF8String:sessionItem->valuestring] copy];
@@ -2428,17 +2674,27 @@ static NSString *os_unique_path(NSString *directory, NSString *name) {
                 goto cleanup;
             }
 
+            [self performSelectorOnMainThread:@selector(sendTransferRunning)
+                                   withObject:nil
+                                waitUntilDone:NO];
             for (NSDictionary *file in files) {
                 NSString *fileId = [file objectForKey:@"id"];
                 NSString *token = [tokens objectForKey:fileId];
                 long long size = [[file objectForKey:@"size"] longLongValue];
+                NSNumber *index = [NSNumber numberWithUnsignedInteger:[files indexOfObject:file]];
                 char uploadPath[1024];
 
+                if (token == nil) continue;
                 snprintf(uploadPath, sizeof uploadPath,
                          "/api/localsend/v2/upload?sessionId=%s&fileId=%s&token=%s",
                          sessionItem->valuestring, [fileId UTF8String], [token UTF8String]);
                 progressContext.base = uploadedBase;
                 progressContext.lastReported = uploadedBase;
+                progressContext.total = totalBytes;
+                progressContext.transferIndex = [index intValue];
+                [self performSelectorOnMainThread:@selector(sendTransferEvent:)
+                                       withObject:[NSArray arrayWithObjects:@"start", index, nil]
+                                    waitUntilDone:NO];
 
                 result = os_client_request(identity, &config, ip, port, fingerprint,
                                            uploadPath, "application/octet-stream",
@@ -2458,6 +2714,9 @@ static NSString *os_unique_path(NSString *directory, NSString *name) {
                     goto cleanup;
                 }
                 uploadedBase += size;
+                [self performSelectorOnMainThread:@selector(sendTransferEvent:)
+                                       withObject:[NSArray arrayWithObjects:@"finish", index, nil]
+                                    waitUntilDone:NO];
             }
 
             cJSON_Delete(responseRoot);
@@ -2491,10 +2750,22 @@ cleanup:
     mbedtls_ctr_drbg_free(&drbg);
     mbedtls_entropy_free(&entropy);
 
+    if (transferStarted) {
+        OSTransferState state = success ? OSTransferStateFinished
+                              : cancelled ? OSTransferStateCancelled
+                              : declined ? OSTransferStateDeclined
+                              : OSTransferStateFailed;
+        [self performSelectorOnMainThread:@selector(endSendTransfer:)
+                               withObject:[NSArray arrayWithObjects:[NSNumber numberWithInt:state],
+                                           errorMessage != nil ? errorMessage : @"", nil]
+                            waitUntilDone:NO];
+    }
+
     {
         NSDictionary *resultInfo = [NSDictionary dictionaryWithObjectsAndKeys:
             [NSNumber numberWithBool:success], @"success",
             [NSNumber numberWithBool:cancelled], @"cancelled",
+            [NSNumber numberWithBool:transferStarted], @"shown",
             errorMessage != nil ? errorMessage : @"", @"message",
             [device objectForKey:@"alias"], @"alias", nil];
         [self performSelectorOnMainThread:@selector(deliverSendResult:)
@@ -2515,6 +2786,16 @@ cleanup:
                                        cancelButtonTitle:NSLocalizedString(@"common.decline", nil)
                                        otherButtonTitles:NSLocalizedString(@"common.accept", nil), nil];
     [_decisionAlert show];
+
+    /* In the background (iOS keeps OldSend running for a few minutes) nobody sees the alert, so
+       post a notification too; opening OldSend from it shows the waiting alert. */
+    if ([[UIApplication sharedApplication] applicationState] != UIApplicationStateActive) {
+        UILocalNotification *notification = [[UILocalNotification alloc] init];
+        notification.alertBody = [NSString stringWithFormat:@"%@\n%@", title, message];
+        notification.soundName = UILocalNotificationDefaultSoundName;
+        [[UIApplication sharedApplication] presentLocalNotificationNow:notification];
+        [notification release];
+    }
 }
 
 - (void)dismissDecisionAlert {
@@ -2764,6 +3045,35 @@ cleanup:
     [self performSelectorOnMainThread:@selector(resetReceivedTexts)
                            withObject:nil
                         waitUntilDone:NO];
+    gCancelReceive = NO;
+    {
+        /* Files get a transfer screen; text messages are shown in the text viewer instead. */
+        NSMutableArray *transferFiles = [NSMutableArray array];
+        cJSON *typeItem = infoItem != NULL ? cJSON_GetObjectItem(infoItem, "deviceType") : NULL;
+        NSString *deviceType = cJSON_IsString(typeItem) && typeItem->valuestring != NULL
+                             ? [NSString stringWithUTF8String:typeItem->valuestring] : @"";
+
+        for (i = 0; i < session.count; i++) {
+            OSFileEntry *entry = &session.files[i];
+            if (entry->isMessage) {
+                entry->transferIndex = -1;
+                continue;
+            }
+            entry->transferIndex = (int)[transferFiles count];
+            [transferFiles addObject:[NSDictionary dictionaryWithObjectsAndKeys:
+                                      [NSString stringWithUTF8String:entry->name], @"name",
+                                      [NSNumber numberWithLongLong:entry->size], @"size", nil]];
+        }
+        if ([transferFiles count] > 0) {
+            [self performSelectorOnMainThread:@selector(startReceiveTransfer:)
+                                   withObject:[NSArray arrayWithObjects:sender, deviceType, transferFiles, nil]
+                                waitUntilDone:NO];
+        } else {
+            [self performSelectorOnMainThread:@selector(clearReceiveTransfer)
+                                   withObject:nil
+                                waitUntilDone:NO];
+        }
+    }
     {
         long long totalBytes = 0;
         for (i = 0; i < session.count; i++) {
@@ -2873,8 +3183,13 @@ cleanup:
         OSProgressContext progress;
         progress.server = self;
         progress.lastReported = 0;
+        progress.transferIndex = entry->transferIndex;
         [self performSelectorOnMainThread:@selector(beginReceivingFile:)
                                withObject:[NSString stringWithUTF8String:entry->name]
+                            waitUntilDone:NO];
+        [self performSelectorOnMainThread:@selector(receiveTransferEvent:)
+                               withObject:[NSArray arrayWithObjects:@"start",
+                                           [NSNumber numberWithInt:entry->transferIndex], nil]
                             waitUntilDone:NO];
         if (os_stream_body(ssl, request, file, &sha, &written,
                            entry->size > 0 ? entry->size : request->contentLength,
@@ -2968,6 +3283,10 @@ cleanup:
             entry->uploaded = 1;
             snprintf(entry->path, sizeof entry->path, "%s", [finalPath fileSystemRepresentation]);
             gSession.remaining--;
+            [self performSelectorOnMainThread:@selector(receiveTransferEvent:)
+                                   withObject:[NSArray arrayWithObjects:@"finish",
+                                               [NSNumber numberWithInt:entry->transferIndex], nil]
+                                waitUntilDone:NO];
             os_logf(self, @"Received text file %s (%lld bytes) -> %@",
                     entry->name, written, [finalPath lastPathComponent]);
         }
@@ -2988,6 +3307,10 @@ cleanup:
         entry->uploaded = 1;
         snprintf(entry->path, sizeof entry->path, "%s", [finalPath fileSystemRepresentation]);
         gSession.remaining--;
+        [self performSelectorOnMainThread:@selector(receiveTransferEvent:)
+                               withObject:[NSArray arrayWithObjects:@"finish",
+                                           [NSNumber numberWithInt:entry->transferIndex], nil]
+                            waitUntilDone:NO];
         os_logf(self, @"Received %s (%lld bytes) -> %@",
                 entry->name, written, [finalPath lastPathComponent]);
     }
@@ -3026,6 +3349,10 @@ cleanup:
                                withObject:[NSNumber numberWithBool:NO]
                             waitUntilDone:NO];
         os_logf(self, @"Session complete");
+        [self performSelectorOnMainThread:@selector(endReceiveTransfer:)
+                               withObject:[NSArray arrayWithObject:
+                                           [NSNumber numberWithInt:OSTransferStateFinished]]
+                            waitUntilDone:NO];
 
         if ([photos count] > 0) {
             [self performSelectorOnMainThread:@selector(enqueuePhotoBatch:)
@@ -3432,6 +3759,8 @@ cleanup:
     [_localIP release];
     [_status release];
     [_log release];
+    [_sendTransfer release];
+    [_receiveTransfer release];
     [super dealloc];
 }
 

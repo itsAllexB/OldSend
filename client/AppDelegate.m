@@ -9,6 +9,8 @@
 #import "OSServer.h"
 #import "OSPlatform.h"
 #import "OSNavigationController.h"
+#import "OSTransfer.h"
+#import "TransferViewController.h"
 
 @interface UIWindow (OSRootViewController)
 - (void)setRootViewController:(UIViewController *)controller;
@@ -172,11 +174,53 @@ static BOOL OSIsWiFiReachable(void) {
     [_window makeKeyAndVisible];
 
     [[UIApplication sharedApplication] setIdleTimerDisabled:YES];
+    _backgroundTask = UIBackgroundTaskInvalid;
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(transferDidStart:)
+                                                 name:OSTransferDidStartNotification
+                                               object:nil];
     [[OSServer shared] start];
 
     [self performSelector:@selector(showWiFiAlertIfNeeded)
                withObject:nil
                afterDelay:1.5];
+}
+
+- (void)transferDidStart:(NSNotification *)notification {
+    TransferViewController *controller = [[TransferViewController alloc] initWithTransfer:[notification object]];
+    UINavigationController *navigation = [[OSNavigationController alloc] initWithRootViewController:controller];
+    UIViewController *presenter = _tabs;
+
+    /* On top of whatever is open (a picker, the text viewer, another transfer). */
+    while (presenter.modalViewController != nil) {
+        presenter = presenter.modalViewController;
+    }
+    [presenter presentModalViewController:navigation animated:YES];
+    [controller release];
+    [navigation release];
+}
+
+- (void)endBackgroundTask {
+    if (_backgroundTask != UIBackgroundTaskInvalid) {
+        [[UIApplication sharedApplication] endBackgroundTask:_backgroundTask];
+        _backgroundTask = UIBackgroundTaskInvalid;
+    }
+}
+
+- (void)applicationDidEnterBackground:(UIApplication *)application {
+    /* Ask iOS for its usual few minutes of background time, so a running transfer can finish
+       and OldSend stays reachable for a while after switching apps. */
+    [self endBackgroundTask];
+    _backgroundTask = [application beginBackgroundTaskWithExpirationHandler:^{
+        [[OSServer shared] appendLog:@"Background time is up"];
+        [self endBackgroundTask];
+    }];
+}
+
+- (void)applicationWillEnterForeground:(UIApplication *)application {
+    [self endBackgroundTask];
+    /* If iOS suspended the app, it may have reclaimed the server's sockets. */
+    [[OSServer shared] resume];
 }
 
 - (void)applicationWillTerminate:(UIApplication *)application {

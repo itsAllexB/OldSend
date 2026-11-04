@@ -754,14 +754,13 @@
     if ([_pendingItems count] == 0) return;
     items = [NSArray arrayWithArray:_pendingItems];
 
+    /* The transfer screen opens when the send starts (OSTransferDidStartNotification) and shows
+       its progress and result. */
     _tableView.userInteractionEnabled = NO;
-    [OSHUD showSendingTo:[device objectForKey:@"alias"]];
     [[OSServer shared] sendItems:items toDevice:device];
 }
 
 - (void)sendProgress:(NSNotification *)notification {
-    NSNumber *value = [[notification userInfo] objectForKey:@"progress"];
-    [OSHUD updateSendProgress:[value floatValue]];
 }
 
 - (void)hudCancel:(NSNotification *)notification {
@@ -779,6 +778,14 @@
     [OSHUD hideSaving];
     _tableView.userInteractionEnabled = YES;
 
+    if ([[result objectForKey:@"shown"] boolValue]) {
+        /* The transfer screen shows the result. */
+        if (success) {
+            [self clearPending];
+            [self refresh];
+        }
+        return;
+    }
     if (cancelled) {
         alert = [[UIAlertView alloc] initWithTitle:NSLocalizedString(@"send.cancelled_title", nil)
                                            message:NSLocalizedString(@"send.cancelled_message", nil)

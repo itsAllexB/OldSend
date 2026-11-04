@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 
 @class UIAlertView;
+@class OSTransfer;
 
 extern NSString * const OSServerDidUpdateNotification;
 extern NSString * const OSServerSendDidFinishNotification;
@@ -47,6 +48,9 @@ extern NSString * const OSServerDidReceiveTextNotification;
     NSMutableArray *_receivedTexts;
     NSTimer *_receiveWatchdog;
     NSTimeInterval _lastReceiveActivity;
+    volatile NSUInteger _networkGeneration;
+    OSTransfer *_sendTransfer;
+    OSTransfer *_receiveTransfer;
 }
 
 + (OSServer *)shared;
@@ -55,6 +59,8 @@ extern NSString * const OSServerDidReceiveTextNotification;
 
 - (void)start;
 - (void)stop;
+/* Call when the app returns to the foreground: reopens the sockets iOS may have reclaimed. */
+- (void)resume;
 - (void)announceNow;
 - (void)refreshDevices;
 
@@ -77,6 +83,7 @@ extern NSString * const OSServerDidReceiveTextNotification;
 
 - (void)sendItems:(NSArray *)items toDevice:(NSDictionary *)device;
 - (void)cancelSending;
+- (void)cancelReceiving;
 
 - (void)appendLog:(NSString *)line;
 

@@ -12,7 +12,9 @@
 A fork of [lihaoyun6/OldSend](https://github.com/lihaoyun6/OldSend) for iOS 6 on Retina iPhones (tested on an iPhone 4S, iOS 6.1.3). Changes from upstream:
 
 - **Sending to LocalSend on desktop works again.** LocalSend 1.17 answers with `Transfer-Encoding: chunked`, which the client did not read, so every send to a desktop failed. The client now decodes chunked replies.
-- **Sharp on Retina screens.** Every interface image has an @2x version, the app icon is redrawn at all sizes, and the file-type icons are a new vector-drawn set (`tools/make_file_icons.py`), since the originals only existed at 32 px.
+- **Live transfer screen**, like LocalSend's: every file with its own progress and state (waiting, sending, done, skipped, failed), plus overall progress, files, size, speed and time left, with Cancel while it runs. Files the receiver leaves out are skipped instead of failing the whole send.
+- **Keeps working after switching apps.** iOS reclaims the sockets of a suspended app, which used to stop OldSend from receiving until it was restarted. It now reopens them when it returns to the foreground, asks iOS for a few minutes of background time so transfers can finish, and posts a notification for incoming requests while in the background.
+- **Sharp on Retina screens.** Every interface image has an @2x version, the app icon is redrawn at all sizes, the file-type icons are a new vector-drawn set (`tools/make_file_icons.py`), since the originals only existed at 32 px, and there are launch images instead of a black screen at start.
 - **Built in GitHub Actions** for armv7 / iOS 6+ (`ci/build-ios6.sh`), packaged as a `.deb` that iOS 6's dpkg accepts. Install the `.deb` (not an IPA): the app keeps its certificate in `/var/mobile/Library/OldSend`, which a sandboxed install cannot create.
 
 New artwork uses [Material Icons](https://github.com/google/material-design-icons) (Apache-2.0). Files changed from upstream are listed in the git history.
