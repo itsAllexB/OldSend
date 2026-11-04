@@ -1593,7 +1593,7 @@ static void os_apply_transfer_event(OSTransfer *transfer, NSArray *event) {
         return;
     }
     if (_receiving || _savingCount > 0) return;
-    if ([NSDate timeIntervalSinceReferenceDate] - _lastReceiveActivity > 8.0) {
+    if ([NSDate timeIntervalSinceReferenceDate] - _lastReceiveActivity > 20.0) {  /* weak Wi-Fi: slow handshakes between files */
         gSession.active = 0;
         gSession.remaining = 0;
         [self failReceivingFile];
@@ -3705,7 +3705,16 @@ cleanup:
     }
 
     if (strncmp(request.path, "/api/localsend/v2/upload", 24) == 0) {
-        int status = [self handleUpload:ssl request:&request identity:(OSIdentity *)_identity];
+        int status;
+        /* Connections get 5 s per read so an idle one cannot hold up the (single-threaded)
+           server, but a file upload over weak Wi-Fi can stall for longer and still finish. */
+        if (ssl->p_bio != NULL) {
+            struct timeval tv;
+            tv.tv_sec = 20;
+            tv.tv_usec = 0;
+            setsockopt(*(int *)ssl->p_bio, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+        }
+        status = [self handleUpload:ssl request:&request identity:(OSIdentity *)_identity];
         os_logf(self, @"%s /api/localsend/v2/upload ← %s (%d)", request.method, peer, status);
         [self sendResponse:ssl status:status body:nil];
         return;
