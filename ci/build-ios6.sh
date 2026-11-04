@@ -24,7 +24,7 @@ CFLAGS=(-target "armv7-apple-ios$MIN" -isysroot "$SDK" -O2 -marm -mno-thumb
         -Wno-deprecated-declarations -Wno-unused-command-line-argument)
 
 objs=()
-for src in client/*.m vendor/cJSON.c vendor/mbedtls/library/*.c ci/compat.c; do
+for src in client/*.m vendor/cJSON.c vendor/mbedtls/library/*.c; do
     obj="$OBJ/$(echo "$src" | tr '/' '_').o"
     "$CC" "${CFLAGS[@]}" -c "$src" -o "$obj"
     objs+=("$obj")

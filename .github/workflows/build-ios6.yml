@@ -24,6 +24,12 @@ jobs:
           printf '%s\n' '---' 'archs:                 [ armv7, armv7s, arm64, i386, x86_64 ]' 'platform:              ios' \
             'install-name:          /usr/lib/system/liblaunch.dylib' 'current-version:       1' 'compatibility-version: 1' \
             '...' > "$THEOS/sdks/iPhoneOS9.3.sdk/usr/lib/system/liblaunch.tbd"
+          # This SDK's libsystem_c stub lists only the internal _platform_* versions of these standard
+          # functions, so the armv7 link fails (mbedtls uses them). Every iOS has them behind libSystem;
+          # adding them to the stub makes the app import them through libSystem like any app does.
+          sed -i 's/^\.\.\.$/  - archs:              [ armv7, armv7s ]\n    symbols:            [ _memchr, _memcmp, _memcpy, _memmove, _memset, _strchr, _strcmp, _strncmp ]\n.../' \
+            "$THEOS/sdks/iPhoneOS9.3.sdk/usr/lib/system/libsystem_c.tbd"
+          tail -4 "$THEOS/sdks/iPhoneOS9.3.sdk/usr/lib/system/libsystem_c.tbd"
           mkdir -p "$HOME/.local/bin"
           curl -fsSL -o "$HOME/.local/bin/ldid" https://github.com/ProcursusTeam/ldid/releases/download/v2.1.5-procursus7/ldid_linux_x86_64
           chmod +x "$HOME/.local/bin/ldid"
