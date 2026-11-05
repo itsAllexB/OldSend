@@ -2,6 +2,7 @@
 #import "OSPlatform.h"
 #import "OSServer.h"
 #import "OSDaemon.h"
+#import "OSMusicLibrary.h"
 
 @interface SettingsPatternView : UIView
 @end
@@ -114,7 +115,7 @@
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (section == 0) return 3;
+    if (section == 0) return 4;
     if (section == 1) return 4;
     return 3;
 }
@@ -230,6 +231,25 @@ static NSString * const kOSCreditURLs[] = { nil, @"https://github.com/lihaoyun6/
                 cell.accessoryView = _photosSwitch;
             }
             _photosSwitch.on = OSSaveToPhotosEnabled();
+            return cell;
+        }
+
+        if (indexPath.row == 3) {
+            static NSString *identifier = @"MusicCell";
+            UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:identifier];
+            if (cell == nil) {
+                cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                               reuseIdentifier:identifier] autorelease];
+                cell.selectionStyle = UITableViewCellSelectionStyleNone;
+                cell.textLabel.text = NSLocalizedString(@"settings.add_music", nil);
+
+                _musicSwitch = [[UISwitch alloc] init];
+                [_musicSwitch addTarget:self
+                                 action:@selector(addMusicChanged:)
+                       forControlEvents:UIControlEventValueChanged];
+                cell.accessoryView = _musicSwitch;
+            }
+            _musicSwitch.on = OSAddToMusicEnabled();
             return cell;
         }
 
@@ -362,6 +382,12 @@ forRowAtIndexPath:(NSIndexPath *)indexPath {
     [[OSDaemonClient shared] settingsChanged];
 }
 
+- (void)addMusicChanged:(UISwitch *)sender {
+    [[NSUserDefaults standardUserDefaults] setBool:sender.on forKey:@"add_to_music"];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+    [[OSDaemonClient shared] settingsChanged];
+}
+
 - (void)backgroundChanged:(UISwitch *)sender {
     OSSetDaemonEnabled(sender.on);
 }
@@ -393,6 +419,7 @@ forRowAtIndexPath:(NSIndexPath *)indexPath {
     [_randomButton release];
     [_quickSaveSwitch release];
     [_photosSwitch release];
+    [_musicSwitch release];
     [_backgroundSwitch release];
     [super dealloc];
 }

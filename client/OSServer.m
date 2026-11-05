@@ -2,6 +2,7 @@
 #import "OSHUD.h"
 #import "OSTransfer.h"
 #import "OSDaemon.h"
+#import "OSMusicLibrary.h"
 #import <UIKit/UIKit.h>
 
 #include <sys/types.h>
@@ -1077,6 +1078,9 @@ static NSString *os_unique_path(NSString *directory, NSString *name) {
 - (void)showPendingReceiveCompleteAlert;
 - (void)sendTransferEvent:(NSArray *)event;
 - (void)receiveTransferEvent:(NSArray *)event;
+- (void)writeSavedMarkerForPath:(NSString *)path;
+- (void)enqueueMusic:(NSArray *)paths;
+- (void)postServerUpdate;
 @end
 
 @implementation OSServer
@@ -1249,6 +1253,7 @@ static void os_apply_transfer_event(OSTransfer *transfer, NSArray *event) {
         _photoCondition = [[NSCondition alloc] init];
         _decisionCondition = [[NSCondition alloc] init];
         _receivedTexts = [[NSMutableArray alloc] init];
+        _musicQueue = [[NSMutableArray alloc] init];
     }
     return self;
 }
@@ -2298,6 +2303,7 @@ static int os_open_discovery_socket(OSServer *server, BOOL log) {
 }
 
 - (void)retryPendingPhotos {
+    [self retryPendingMusic];
     if (_retryingPhotos || OSIsHeadless()) return;
     _retryingPhotos = YES;
     [NSThread detachNewThreadSelector:@selector(retryPendingPhotosThread) toTarget:self withObject:nil];
@@ -3511,6 +3517,7 @@ cleanup:
 
     if (gSession.remaining <= 0) {
         NSMutableArray *photos = [NSMutableArray array];
+        NSMutableArray *music = [NSMutableArray array];
         int receivedFileCount = 0;
         int j;
 
@@ -3533,6 +3540,8 @@ cleanup:
                 [photos addObject:[NSArray arrayWithObjects:
                                    [NSString stringWithUTF8String:item->path],
                                    [NSString stringWithUTF8String:item->type], nil]];
+            } else if (OSIsMusicFile([NSString stringWithUTF8String:item->path])) {
+                [music addObject:[NSString stringWithUTF8String:item->path]];
             } else {
                 os_logf(self, @"Kept in app: %s", item->name);
             }
@@ -3562,6 +3571,16 @@ cleanup:
             [self performSelectorOnMainThread:@selector(enqueuePhotoBatch:)
                                    withObject:photos
                                 waitUntilDone:NO];
+        }
+        if ([music count] > 0 && !OSAddToMusicEnabled()) {
+            /* Add to Music is off: the songs stay in History, now and at later launches. */
+            for (NSString *song in music) {
+                [self writeSavedMarkerForPath:song];
+            }
+            os_logf(self, @"Kept %d song(s) in the app (Add to Music is off)", (int)[music count]);
+        } else if ([music count] > 0) {
+            /* The background service adds them too: it runs as mobile, like the app. */
+            [self enqueueMusic:music];
         }
         [self performSelectorOnMainThread:@selector(showReceivedTexts)
                                withObject:nil
@@ -3877,6 +3896,94 @@ cleanup:
     [pool release];
 }
 
+#pragma mark Add to Music
+
+- (void)postServerUpdate {
+    [[NSNotificationCenter defaultCenter] postNotificationName:OSServerDidUpdateNotification object:self];
+}
+
+/* Songs go into the Music app one at a time on their own thread: reading the tags of a long
+   MP3 and writing the library can take a few seconds. */
+- (void)enqueueMusic:(NSArray *)paths {
+    BOOL start = NO;
+
+    @synchronized (_musicQueue) {
+        for (NSString *path in paths) {
+            if (![_musicQueue containsObject:path]) [_musicQueue addObject:path];
+        }
+        if ([_musicQueue count] > 0 && !_musicThreadRunning) {
+            _musicThreadRunning = YES;
+            start = YES;
+        }
+    }
+    if (start) {
+        [NSThread detachNewThreadSelector:@selector(musicThreadMain) toTarget:self withObject:nil];
+    }
+}
+
+- (void)musicThreadMain {
+    NSString *markerDirectory = [@OS_RECEIVED_DIR stringByAppendingPathComponent:@".saved"];
+
+    for (;;) {
+        NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+        NSFileManager *manager = [NSFileManager defaultManager];
+        NSString *path = nil;
+        NSString *detail = nil;
+        OSMusicResult result;
+
+        @synchronized (_musicQueue) {
+            if ([_musicQueue count] > 0) {
+                path = [[[_musicQueue objectAtIndex:0] retain] autorelease];
+                [_musicQueue removeObjectAtIndex:0];
+            } else {
+                _musicThreadRunning = NO;
+            }
+        }
+        if (path == nil) {
+            [pool release];
+            break;
+        }
+        if (![manager fileExistsAtPath:path] ||
+            [manager fileExistsAtPath:[markerDirectory stringByAppendingPathComponent:[path lastPathComponent]]]) {
+            [pool release];
+            continue;
+        }
+
+        os_logf(self, @"Adding to Music: %@", [path lastPathComponent]);
+        result = OSAddFileToMusic(path, &detail);
+        if (result == OSMusicAdded) {
+            /* One copy, like Save to Photos: the song now lives in the Music app. */
+            os_logf(self, @"Added to Music, removed from History: %@ -> %@", [path lastPathComponent], detail);
+        } else {
+            os_logf(self, @"Kept in app (not added to Music: %@): %@", detail, [path lastPathComponent]);
+            /* Don't try again at every launch. */
+            if ([manager fileExistsAtPath:path]) [self writeSavedMarkerForPath:path];
+        }
+        [self performSelectorOnMainThread:@selector(postServerUpdate) withObject:nil waitUntilDone:NO];
+        [pool release];
+    }
+}
+
+- (void)retryPendingMusic {
+    NSFileManager *manager = [NSFileManager defaultManager];
+    NSString *directory = @OS_RECEIVED_DIR;
+    NSString *markerDirectory = [directory stringByAppendingPathComponent:@".saved"];
+    NSMutableArray *pending = [NSMutableArray array];
+
+    if (!OSAddToMusicEnabled()) return;
+    for (NSString *name in [manager contentsOfDirectoryAtPath:directory error:NULL]) {
+        NSString *path;
+        BOOL isDirectory = NO;
+
+        if ([name hasPrefix:@"."] || !OSIsMusicFile(name)) continue;
+        path = [directory stringByAppendingPathComponent:name];
+        if (![manager fileExistsAtPath:path isDirectory:&isDirectory] || isDirectory) continue;
+        if ([manager fileExistsAtPath:[markerDirectory stringByAppendingPathComponent:name]]) continue;
+        [pending addObject:path];
+    }
+    if ([pending count] > 0) [self enqueueMusic:pending];
+}
+
 - (int)handleCancel:(const char *)path {
     char sessionId[64];
     if (!os_query_value(path, "sessionId", sessionId, sizeof sessionId)) return 400;
@@ -3989,6 +4096,7 @@ cleanup:
     [_log release];
     [_sendTransfer release];
     [_receiveTransfer release];
+    [_musicQueue release];
     [super dealloc];
 }
 

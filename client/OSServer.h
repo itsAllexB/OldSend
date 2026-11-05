@@ -59,6 +59,8 @@ BOOL OSSenderGaveUp(void);
     volatile BOOL _paused;
     NSTimer *_publishTimer;
     volatile BOOL _retryingPhotos;
+    NSMutableArray *_musicQueue;
+    BOOL _musicThreadRunning;
 }
 
 + (OSServer *)shared;
@@ -75,8 +77,11 @@ BOOL OSSenderGaveUp(void);
 - (BOOL)isPaused;
 /* A request waiting for an answer, or a transfer running, in either direction. */
 - (BOOL)hasActiveSession;
-/* Copies received photos/videos not yet in Photos into Photos (if Save to Photos is on). */
+/* Copies received photos/videos not yet in Photos into Photos (if Save to Photos is on), and
+   adds received songs not yet in Music to Music (if Add to Music is on, also in the service). */
 - (void)retryPendingPhotos;
+/* Adds received songs not yet in the Music app to it (if Add to Music is on). */
+- (void)retryPendingMusic;
 - (void)announceNow;
 - (void)refreshDevices;
 

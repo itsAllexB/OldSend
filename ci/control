@@ -1,6 +1,6 @@
 Package: com.itsallexb.oldsend
 Name: OldSend
-Version: 2.0
+Version: 2.1
 Architecture: iphoneos-arm
 Description: LocalSend-compatible file transfer for old iPhones. itsAllexB's version 2.0 for iOS 6 (armv7), based on OldSend by lihaoyun6: sends to LocalSend on desktop again, live transfer screen, OldSend in the share sheet of every app, optional background service, Retina artwork.
 Maintainer: itsAllexB

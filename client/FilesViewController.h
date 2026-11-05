@@ -13,6 +13,7 @@
     NSMutableSet *_selectedPaths;
     BOOL _batchEditing;
     BOOL _rowEditing;
+    NSURL *_previewURL;
 }
 
 @end

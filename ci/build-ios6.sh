@@ -33,6 +33,7 @@ done
 "$CC" "${CFLAGS[@]}" "${objs[@]}" \
     -framework UIKit -framework Foundation -framework QuartzCore \
     -framework CoreGraphics -framework SystemConfiguration \
+    -framework AVFoundation -framework QuickLook \
     -o "$APP/OldSend"
 
 # The media picker lives in its own library, as upstream: the app loads it at run time when the

@@ -17,6 +17,8 @@ OldSend 2.0 is my version of [OldSend by lihaoyun6](https://github.com/lihaoyun6
 - **Run in Background** (Settings, off by default): a background service (the same binary, started by launchd at boot, `client/OSDaemon.m`) keeps the phone discoverable and able to receive with OldSend closed. Incoming requests show a notification; tapping it opens OldSend with the Accept / Decline prompt and the live transfer screen. The app and the service hand the port to each other automatically, the service follows Wi-Fi network changes, and it keeps the phone awake only while files are coming in. While the phone sleeps, iOS pauses it like any app, so it costs no battery while waiting.
 - **Send anything**: photos, videos, text, the clipboard, links and any file, with a built-in filesystem browser. Tapping a device with nothing chosen opens the choices.
 - **Receive** into History, with **Save to Photos** in Settings: on, received photos and videos are moved into Photos (one copy, like LocalSend); off, they stay in History. Quick Save accepts incoming files without asking.
+- **Add to Music** (Settings, on by default): received songs that iOS 6 plays natively (MP3, AAC and Apple Lossless in `.m4a`, `.m4b` audiobooks, `.aac`, WAV, AIFF, CAF) are moved into the Music app, with their tags and artwork, and show up under Songs, Artists and Albums. OldSend uses the iPhone's own music library code (MusicLibrary.framework's importer, the one the iTunes Store uses for downloads), so the library database stays consistent; if anything fails, the song stays in History. FLAC, Ogg, Opus and other formats iOS 6 can't play stay in History. The background service adds songs too.
+- **History opens files in Quick Look**, like Mail's attachments: songs play right there, and photos, videos, PDFs, documents and text open too, with "Open in…" in the share button. Files Quick Look can't show get the file info as before.
 - **Network info** on the Receive page: device name, IP addresses and port.
 - **Keeps working after switching apps**: OldSend reopens the sockets iOS reclaims from suspended apps, asks for a few minutes of background time so transfers can finish, and posts a notification for incoming requests while in the background.
 - **Robust receiving**: waits out Wi-Fi stalls of up to 20 seconds and recovers when a sender disappears.
@@ -24,6 +26,12 @@ OldSend 2.0 is my version of [OldSend by lihaoyun6](https://github.com/lihaoyun6
 - **Native Objective-C / UIKit**, with no dependency on Flutter, Electron or web runtimes. English and Simplified Chinese interface.
 
 > Requires a jailbroken iOS 6 device (armv7) with MobileSubstrate; the package installs on iOS 6.x only. OldSend is installed as a system app under `/Applications`.
+
+## Known limitations and to do
+
+- **iTunes sync and Add to Music.** Songs added on the phone aren't in the computer's iTunes library. If the iPhone syncs music with iTunes (not "Manually manage music"), iTunes may remove them at the next sync, as it does with any song it doesn't know; since Add to Music keeps one copy, keep the original on the sending computer, or turn Add to Music off to keep songs in History.
+- Songs are added as songs (`.m4b` as audiobooks); OldSend doesn't create playlists, and ringtones (`.m4r`) stay in History.
+- iOS 6 can't play FLAC, Ogg Vorbis or Opus, so those stay in History and Quick Look can't preview them.
 
 ## Installation
 

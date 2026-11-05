@@ -3,6 +3,7 @@
 #import "SelectionCircleView.h"
 #import "FileTypeIcon.h"
 #import "OSServer.h"
+#import <QuickLook/QuickLook.h>
 #include <math.h>
 
 #define OS_RECEIVED_PATH @"/var/mobile/Library/OldSend/Received"
@@ -79,6 +80,13 @@
     [super dealloc];
 }
 
+@end
+
+/* Tapping a received file opens it in Quick Look, as Mail does with attachments: photos,
+   videos, songs (MP3, AAC, ALAC, WAV, AIFF, CAF play right there), PDFs, Office and iWork
+   documents, text. Its share button offers "Open in…". Files Quick Look can't show (FLAC, ZIP…)
+   get the File Info alert as before. */
+@interface FilesViewController () <QLPreviewControllerDataSource>
 @end
 
 @implementation FilesViewController
@@ -457,6 +465,20 @@ didEndEditingRowAtIndexPath:(NSIndexPath *)indexPath {
 
     {
         NSDictionary *file = [_files objectAtIndex:indexPath.row];
+        NSURL *url = [NSURL fileURLWithPath:[file objectForKey:@"path"]];
+        if ([QLPreviewController canPreviewItem:url]) {
+            QLPreviewController *preview = [[QLPreviewController alloc] init];
+            [_previewURL release];
+            _previewURL = [url retain];
+            preview.dataSource = self;
+            [self presentModalViewController:preview animated:YES];
+            [preview release];
+            return;
+        }
+    }
+
+    {
+        NSDictionary *file = [_files objectAtIndex:indexPath.row];
         long long size = [[file objectForKey:@"size"] longLongValue];
         NSString *message = [NSString stringWithFormat:NSLocalizedString(@"files.info_message", nil),
                              [file objectForKey:@"name"],
@@ -473,8 +495,17 @@ didEndEditingRowAtIndexPath:(NSIndexPath *)indexPath {
     }
 }
 
+- (NSInteger)numberOfPreviewItemsInPreviewController:(QLPreviewController *)controller {
+    return _previewURL != nil ? 1 : 0;
+}
+
+- (id <QLPreviewItem>)previewController:(QLPreviewController *)controller previewItemAtIndex:(NSInteger)index {
+    return _previewURL;
+}
+
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+    [_previewURL release];
     [_tableView release];
     [_emptyLabel release];
     [_pathLabel release];
