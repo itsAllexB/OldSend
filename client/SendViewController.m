@@ -453,35 +453,59 @@
 
 - (void)mediaPicker:(id)picker didFinishWithItems:(NSArray *)items {
     NSString *directory = @"/var/mobile/Library/OldSend/Outgoing";
+    NSFileManager *manager = [NSFileManager defaultManager];
+    NSUInteger added = 0;
 
     [self dismissModalViewControllerAnimated:YES];
-    [[NSFileManager defaultManager] createDirectoryAtPath:directory
-                              withIntermediateDirectories:YES
-                                               attributes:nil
-                                                    error:NULL];
+    [manager createDirectoryAtPath:directory
+       withIntermediateDirectories:YES
+                        attributes:nil
+                             error:NULL];
 
     for (NSDictionary *item in items) {
         NSString *kind = [item objectForKey:@"kind"];
         if ([kind isEqualToString:@"image"]) {
+            NSUInteger before = [_pendingItems count];
             [self addMediaImage:[item objectForKey:@"image"]];
-        } else if ([kind isEqualToString:@"video"]) {
+            if ([_pendingItems count] > before) added++;
+        } else if ([kind isEqualToString:@"photo"] || [kind isEqualToString:@"video"]) {
+            /* The picker copies each original into its own picked-... folder (so files keep
+               their names, IMG_0001.JPG); that folder moves into Outgoing as it is. */
             NSString *source = [item objectForKey:@"path"];
             NSString *name = [item objectForKey:@"name"];
-            NSString *destination = [directory stringByAppendingPathComponent:name];
+            NSString *sourceFolder = [source stringByDeletingLastPathComponent];
+            NSString *folder = [directory stringByAppendingPathComponent:[sourceFolder lastPathComponent]];
+            NSString *destination = [folder stringByAppendingPathComponent:name];
 
-            if ([[NSFileManager defaultManager] moveItemAtPath:source
-                                                        toPath:destination
-                                                         error:NULL]) {
+            if (![[sourceFolder lastPathComponent] hasPrefix:@"picked-"]) continue;
+            if ([manager moveItemAtPath:sourceFolder toPath:folder error:NULL] ||
+                ([manager createDirectoryAtPath:folder withIntermediateDirectories:YES
+                                     attributes:nil error:NULL] &&
+                 [manager copyItemAtPath:source toPath:destination error:NULL])) {
+                [manager removeItemAtPath:sourceFolder error:NULL];
                 [_pendingItems addObject:[NSDictionary dictionaryWithObjectsAndKeys:
                     @"media", @"kind",
                     destination, @"path",
                     name, @"name",
                     [item objectForKey:@"type"], @"type",
                     [item objectForKey:@"size"], @"size", nil]];
+                added++;
+            } else {
+                [manager removeItemAtPath:sourceFolder error:NULL];
             }
         }
     }
     [self refresh];
+
+    if (added == 0 || added < [items count]) {
+        UIAlertView *alert = [[UIAlertView alloc] initWithTitle:NSLocalizedString(@"send.media", nil)
+                                                        message:NSLocalizedString(@"send.media_failed_message", nil)
+                                                       delegate:nil
+                                              cancelButtonTitle:NSLocalizedString(@"common.ok", nil)
+                                              otherButtonTitles:nil];
+        [alert show];
+        [alert release];
+    }
 }
 
 - (void)mediaPickerDidCancel:(id)picker {
@@ -613,7 +637,8 @@
         if ([path hasPrefix:@"/var/mobile/Library/OldSend/Outgoing/"]) {
             NSString *parent = [path stringByDeletingLastPathComponent];
             [[NSFileManager defaultManager] removeItemAtPath:path error:NULL];
-            if ([[parent lastPathComponent] hasPrefix:@"shared-"]) {
+            if ([[parent lastPathComponent] hasPrefix:@"shared-"] ||
+                [[parent lastPathComponent] hasPrefix:@"picked-"]) {
                 [[NSFileManager defaultManager] removeItemAtPath:parent error:NULL];
             }
         }

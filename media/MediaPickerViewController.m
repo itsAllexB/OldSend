@@ -322,6 +322,7 @@ static CGFloat MediaThumbSize(CGFloat width, NSInteger columns) {
         return;
     }
 
+    [_library release];
     _library = library;
     if (gActiveMediaPicker != self) {
         [gActiveMediaPicker release];
@@ -377,8 +378,9 @@ static CGFloat MediaThumbSize(CGFloat width, NSInteger columns) {
     _assets = [_loadingAssets retain];
     [_loadingAssets release];
     _loadingAssets = nil;
-    [_library release];
-    _library = nil;
+    /* _library stays alive until the picker goes away: an ALAsset is only usable while the
+       library that returned it exists. Releasing it here left every asset without a
+       representation, so Done exported nothing and no photo or video reached the Send tab. */
     [gActiveGroup release];
     gActiveGroup = nil;
     [gActiveFilter release];
@@ -612,6 +614,105 @@ static CGFloat MediaThumbSize(CGFloat width, NSInteger columns) {
                            withObject:nil];
 }
 
+/* MIME type for a photo or video file name, as LocalSend's own clients send it. */
+static NSString *MediaMimeType(NSString *name) {
+    NSString *extension = [[name pathExtension] lowercaseString];
+    if ([extension isEqualToString:@"jpg"] || [extension isEqualToString:@"jpeg"]) return @"image/jpeg";
+    if ([extension isEqualToString:@"png"]) return @"image/png";
+    if ([extension isEqualToString:@"gif"]) return @"image/gif";
+    if ([extension isEqualToString:@"tif"] || [extension isEqualToString:@"tiff"]) return @"image/tiff";
+    if ([extension isEqualToString:@"bmp"]) return @"image/bmp";
+    if ([extension isEqualToString:@"mov"]) return @"video/quicktime";
+    if ([extension isEqualToString:@"mp4"]) return @"video/mp4";
+    if ([extension isEqualToString:@"m4v"]) return @"video/x-m4v";
+    return @"application/octet-stream";
+}
+
+/* File extension for a representation's UTI, for assets that don't report a file name. */
+static NSString *MediaExtensionForUTI(NSString *uti, BOOL video) {
+    uti = [uti lowercaseString];
+    if ([uti rangeOfString:@"jpeg"].location != NSNotFound) return @"JPG";
+    if ([uti rangeOfString:@"png"].location != NSNotFound) return @"PNG";
+    if ([uti rangeOfString:@"gif"].location != NSNotFound) return @"GIF";
+    if ([uti rangeOfString:@"tiff"].location != NSNotFound) return @"TIFF";
+    if ([uti rangeOfString:@"mpeg-4"].location != NSNotFound) return @"MP4";
+    if ([uti rangeOfString:@"m4v"].location != NSNotFound) return @"M4V";
+    if ([uti rangeOfString:@"quicktime"].location != NSNotFound) return @"MOV";
+    return video ? @"MOV" : @"JPG";
+}
+
+/* Copies one asset's original file (the photo or video as the camera saved it) out of the
+   library, under its own name (IMG_0001.JPG), into a new folder in the temporary directory,
+   so that two assets with the same name can't overwrite each other. Returns the Send item,
+   or nil if the library couldn't give the file. */
+- (NSDictionary *)exportAsset:(ALAsset *)asset {
+    NSFileManager *manager = [NSFileManager defaultManager];
+    ALAssetRepresentation *representation = [asset defaultRepresentation];
+    BOOL video = [[asset valueForProperty:ALAssetPropertyType] isEqualToString:ALAssetTypeVideo];
+    long long size;
+    NSString *name = nil;
+    NSString *folder;
+    NSString *path;
+    NSFileHandle *handle;
+    uint8_t *buffer;
+    long long offset = 0;
+
+    if (representation == nil) return nil;
+    size = [representation size];
+    if (size <= 0) return nil;
+
+    if ([representation respondsToSelector:@selector(filename)]) {
+        name = [[representation filename] lastPathComponent];
+    }
+    if ([name length] == 0 || [name hasPrefix:@"."]) {
+        name = [NSString stringWithFormat:@"%@_%u.%@", video ? @"VID" : @"IMG",
+                (unsigned)[[NSDate date] timeIntervalSince1970],
+                MediaExtensionForUTI([representation UTI], video)];
+    }
+
+    folder = [NSTemporaryDirectory() stringByAppendingPathComponent:
+              [NSString stringWithFormat:@"picked-%u-%u",
+               (unsigned)[[NSDate date] timeIntervalSince1970], (unsigned)arc4random()]];
+    if (![manager createDirectoryAtPath:folder withIntermediateDirectories:YES
+                             attributes:nil error:NULL]) {
+        return nil;
+    }
+    path = [folder stringByAppendingPathComponent:name];
+    [manager createFileAtPath:path contents:nil attributes:nil];
+    handle = [NSFileHandle fileHandleForWritingAtPath:path];
+    buffer = (uint8_t *)malloc(256 * 1024);
+
+    if (handle != nil && buffer != NULL) {
+        while (offset < size) {
+            NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+            NSUInteger length = (NSUInteger)MIN((long long)(256 * 1024), size - offset);
+            NSUInteger read = [representation getBytes:buffer
+                                            fromOffset:offset
+                                                length:length
+                                                 error:NULL];
+            if (read > 0) {
+                [handle writeData:[NSData dataWithBytesNoCopy:buffer length:read freeWhenDone:NO]];
+                offset += read;
+            }
+            [pool release];
+            if (read == 0) break;
+        }
+        [handle closeFile];
+    }
+    if (buffer != NULL) free(buffer);
+
+    if (offset != size) {
+        [manager removeItemAtPath:folder error:NULL];
+        return nil;
+    }
+    return [NSDictionary dictionaryWithObjectsAndKeys:
+            video ? @"video" : @"photo", @"kind",
+            path, @"path",
+            name, @"name",
+            MediaMimeType(name), @"type",
+            [NSNumber numberWithLongLong:size], @"size", nil];
+}
+
 - (NSArray *)selectedItems {
     NSMutableArray *items = [NSMutableArray array];
     NSArray *indexes = [[_selectedIndexes allObjects] sortedArrayUsingSelector:@selector(compare:)];
@@ -619,84 +720,11 @@ static CGFloat MediaThumbSize(CGFloat width, NSInteger columns) {
 
     for (i = 0; i < (NSInteger)[indexes count]; i++) {
         NSInteger index = [[indexes objectAtIndex:i] integerValue];
-        ALAsset *asset;
-        NSString *assetType;
+        NSDictionary *item;
 
         if (index < 0 || index >= (NSInteger)[_assets count]) continue;
-        asset = [_assets objectAtIndex:index];
-        assetType = [asset valueForProperty:ALAssetPropertyType];
-
-        if ([assetType isEqualToString:ALAssetTypeVideo]) {
-            ALAssetRepresentation *representation = [asset defaultRepresentation];
-            long long size = [representation size];
-            NSString *uti = [[representation UTI] lowercaseString];
-            NSString *extension = @"mov";
-            NSString *mime = @"video/quicktime";
-            NSString *name;
-            NSString *path;
-            NSFileHandle *handle;
-            uint8_t *buffer;
-            long long offset = 0;
-
-            if ([uti rangeOfString:@"mpeg-4"].location != NSNotFound ||
-                [uti rangeOfString:@"mp4"].location != NSNotFound) {
-                extension = @"mp4";
-                mime = @"video/mp4";
-            } else if ([uti rangeOfString:@"m4v"].location != NSNotFound) {
-                extension = @"m4v";
-                mime = @"video/x-m4v";
-            }
-
-            name = [NSString stringWithFormat:@"media-%u-%u.%@",
-                    (unsigned)[[NSDate date] timeIntervalSince1970],
-                    (unsigned)arc4random(), extension];
-            path = [NSTemporaryDirectory() stringByAppendingPathComponent:name];
-
-            [[NSFileManager defaultManager] createFileAtPath:path contents:nil attributes:nil];
-            handle = [NSFileHandle fileHandleForWritingAtPath:path];
-            buffer = (uint8_t *)malloc(256 * 1024);
-
-            if (handle != nil && buffer != NULL) {
-                while (offset < size) {
-                    NSUInteger length = (NSUInteger)MIN((long long)(256 * 1024), size - offset);
-                    NSError *error = nil;
-                    NSUInteger read = [representation getBytes:buffer
-                                                    fromOffset:offset
-                                                        length:length
-                                                         error:&error];
-                    if (read == 0) break;
-                    [handle writeData:[NSData dataWithBytes:buffer length:read]];
-                    offset += read;
-                }
-                [handle closeFile];
-            }
-            if (buffer != NULL) free(buffer);
-
-            if (offset > 0) {
-                [items addObject:[NSDictionary dictionaryWithObjectsAndKeys:
-                    @"video", @"kind",
-                    path, @"path",
-                    name, @"name",
-                    mime, @"type",
-                    [NSNumber numberWithLongLong:size], @"size", nil]];
-            } else {
-                [[NSFileManager defaultManager] removeItemAtPath:path error:NULL];
-            }
-        } else {
-            ALAssetRepresentation *representation = [asset defaultRepresentation];
-            CGImageRef imageRef = [representation fullScreenImage];
-            if (imageRef == NULL) imageRef = [representation fullResolutionImage];
-            if (imageRef != NULL) {
-                UIImage *image = [UIImage imageWithCGImage:imageRef
-                                                    scale:1.0f
-                                              orientation:(UIImageOrientation)[representation orientation]];
-                if (image != nil) {
-                    [items addObject:[NSDictionary dictionaryWithObjectsAndKeys:
-                        @"image", @"kind",
-                        image, @"image", nil]];
-                }
-            }
-        }
+        item = [self exportAsset:[_assets objectAtIndex:index]];
+        if (item != nil) [items addObject:item];
     }
     return items;
 }
