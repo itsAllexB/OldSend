@@ -1393,6 +1393,9 @@ static void os_apply_transfer_event(OSTransfer *transfer, NSArray *event) {
     _currentFileWritten = 0;
     _sessionProgress = 0.0f;
     _receiving = NO;
+    /* Ends the session if the sender goes quiet (upstream defined the watchdog but never started
+       it, so a sender that vanished after the accept left OldSend "busy" (409) until restarted). */
+    [self startReceiveWatchdog];
     [[NSNotificationCenter defaultCenter] postNotificationName:OSServerDidUpdateNotification
                                                         object:self];
 }

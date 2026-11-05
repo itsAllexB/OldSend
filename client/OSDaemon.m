@@ -54,15 +54,22 @@ static void os_post(const char *name) {
     notify_post(name);
 }
 
+/* The app's foreground pid lives in the state of a Darwin notification name. notifyd forgets a
+   name's state once nobody is registered for it, so both processes keep one registration open. */
+static int os_app_state_token(void) {
+    static int token = -1;
+    if (token == -1 && notify_register_check(OS_NOTE_APP, &token) != NOTIFY_STATUS_OK) token = -1;
+    return token;
+}
+
 #pragma mark - Service side
 
 BOOL OSDaemonAppIsActive(void) {
-    int token;
+    int token = os_app_state_token();
     uint64_t pid = 0;
 
-    if (notify_register_check(OS_NOTE_APP, &token) != NOTIFY_STATUS_OK) return NO;
+    if (token == -1) return NO;
     notify_get_state(token, &pid);
-    notify_cancel(token);
     /* A crashed app leaves its pid behind; only a live process counts. */
     return pid > 0 && kill((pid_t)pid, 0) == 0;
 }
@@ -257,11 +264,8 @@ int OSDaemonMain(void) {
 }
 
 - (void)publishActive:(BOOL)active {
-    int token;
-    if (notify_register_check(OS_NOTE_APP, &token) == NOTIFY_STATUS_OK) {
-        notify_set_state(token, active ? (uint64_t)getpid() : 0);
-        notify_cancel(token);
-    }
+    int token = os_app_state_token();
+    if (token != -1) notify_set_state(token, active ? (uint64_t)getpid() : 0);
     os_post(OS_NOTE_APP);
 }
 
