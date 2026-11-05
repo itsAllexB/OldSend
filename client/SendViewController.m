@@ -25,6 +25,19 @@
 - (void)showFromBarButtonItem:(UIBarButtonItem *)item animated:(BOOL)animated;
 @end
 
+/* A table cell highlights everything in it while the row is held, which made the info button
+   glow as if pressed. This one shows its pressed state only when it is the one being touched. */
+@interface OSAccessoryButton : UIButton
+@end
+
+@implementation OSAccessoryButton
+
+- (void)setHighlighted:(BOOL)highlighted {
+    [super setHighlighted:highlighted && self.tracking];
+}
+
+@end
+
 @interface DeviceCell : UITableViewCell {
     UIImageView *_deviceIconView;
     UILabel *_nameLabel;
@@ -57,7 +70,7 @@
 
         /* The button shows the device's details, so an info button rather than a disclosure
            arrow; our own icon, since iOS 6's draws an italic serif "i". */
-        _detailButton = [[UIButton buttonWithType:UIButtonTypeCustom] retain];
+        _detailButton = [[OSAccessoryButton buttonWithType:UIButtonTypeCustom] retain];
         [_detailButton setImage:[UIImage imageNamed:@"InfoButtonDark.png"] forState:UIControlStateNormal];
         _detailButton.frame = CGRectMake(0, 0, 32, 32);
         _detailButton.showsTouchWhenHighlighted = YES;
