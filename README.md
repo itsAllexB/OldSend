@@ -1,33 +1,27 @@
 #
 <p align="center">
-<img src="./client/Icon-72@2x.png" width="72" />
+<img src="./client/Icon@2x.png" width="96" />
 <h1 align="center">OldSend 2.0</h1>
 <h3 align="center">A native LocalSend-compatible client for jailbroken iOS 6 devices</h3>
 </p>
 
-[简体中文](README_zh.md)
-
 OldSend 2.0 is my version of [OldSend by lihaoyun6](https://github.com/lihaoyun6/OldSend), the native [LocalSend](https://localsend.org) client for old iPhones, made for iOS 6 on Retina iPhones (tested on an iPhone 4S, iOS 6.1.3). Send files, photos, videos, links and text between an old iPhone and any device running LocalSend.
 
-## What's new in 2.0
-
-- **Sending to LocalSend on desktop works again.** LocalSend 1.17 answers with `Transfer-Encoding: chunked`, which the client did not read, so every send to a desktop failed. The client now decodes chunked replies.
-- **Live transfer screen**, like LocalSend's: every file with its own progress and state (waiting, sending, done, skipped, failed), plus overall progress, files, size, speed and time left, with Cancel while it runs. Files the receiver leaves out are skipped instead of failing the whole send.
-- **OldSend in the share sheet of every app.** A small MobileSubstrate add-on (`share/`) puts an OldSend button into the iOS 6 share sheet (Safari, Photos and any app using `UIActivityViewController`); links, text, photos, videos and files shared with it open in OldSend's Send tab, ready to send. OldSend also appears under "Open in…" for any file.
-- **Run in Background** (Settings, off by default): a background service (the same binary, started by launchd at boot, `client/OSDaemon.m`) keeps the phone discoverable and able to receive with OldSend closed. Incoming requests show a notification; tapping it opens OldSend with the Accept / Decline prompt and the live transfer screen. The app and the service hand the port to each other automatically, the service follows Wi-Fi network changes, and it keeps the phone awake only while files are coming in. While the phone sleeps, iOS pauses it like any app, so it costs no battery while waiting.
-- **Save to Photos switch** in Settings: on, received photos and videos are moved into Photos (one copy, like LocalSend); off, they stay in History.
-- **Network info** on the Receive page (device name, IP addresses, port), and on the Send page tapping a device with nothing chosen opens the Add choices.
-- **Keeps working after switching apps.** iOS reclaims the sockets of a suspended app, which used to stop OldSend from receiving until it was restarted. It now reopens them when it returns to the foreground, asks iOS for a few minutes of background time so transfers can finish, and posts a notification for incoming requests while in the background.
-- **More robust receiving:** waits out Wi-Fi stalls of up to 20 seconds instead of 5, and no longer stays "busy" forever when a sender disappears after you accept.
-- **Sharp on Retina screens.** Every interface image has an @2x version, the app icon is redrawn at all sizes, the file-type icons are a new vector-drawn set (`tools/make_file_icons.py`), since the originals only existed at 32 px, and there are launch images instead of a black screen at start. iOS 6 draws the icons of apps in `/Applications` exactly as supplied (no rounded mask), so `tools/make_app_icons.py` cuts the corners into every size.
+![OldSend 2.0](preview.png)
 
 ## Features
 
-- Native Objective-C / UIKit app, with no dependency on Flutter, Electron, or web runtimes.
-- Compatible with LocalSend protocol v2.2: multicast discovery, register, prepare-upload, upload, and cancel.
-- TLS 1.2 with bundled mbedTLS 2.28.8.
-- Sends photos, videos, text, links and any file (with a built-in filesystem browser), and receives into History, with photos and videos copied to Photos.
-- Simplified Chinese and English interfaces.
+- **Works with LocalSend everywhere**: protocol v2.2 (multicast discovery, register, prepare-upload, upload and cancel) over TLS 1.2, with bundled mbedTLS 2.28.8. Sending to LocalSend on desktop works again: LocalSend 1.17 answers with `Transfer-Encoding: chunked`, which the original client couldn't read.
+- **Live transfer screen**, like LocalSend's: every file with its own progress and state (waiting, sending, done, skipped, failed), plus overall progress, files, size, speed and time left, with Cancel while it runs. Files the receiver leaves out are skipped instead of failing the whole send.
+- **OldSend in the share sheet of every app.** A small MobileSubstrate add-on (`share/`) puts an OldSend button into the iOS 6 share sheet (Safari, Photos and any app using `UIActivityViewController`); links, text, photos, videos and files shared with it open in OldSend's Send tab, ready to send. OldSend also appears under "Open in…" for any file.
+- **Run in Background** (Settings, off by default): a background service (the same binary, started by launchd at boot, `client/OSDaemon.m`) keeps the phone discoverable and able to receive with OldSend closed. Incoming requests show a notification; tapping it opens OldSend with the Accept / Decline prompt and the live transfer screen. The app and the service hand the port to each other automatically, the service follows Wi-Fi network changes, and it keeps the phone awake only while files are coming in. While the phone sleeps, iOS pauses it like any app, so it costs no battery while waiting.
+- **Send anything**: photos, videos, text, the clipboard, links and any file, with a built-in filesystem browser. Tapping a device with nothing chosen opens the choices.
+- **Receive** into History, with **Save to Photos** in Settings: on, received photos and videos are moved into Photos (one copy, like LocalSend); off, they stay in History. Quick Save accepts incoming files without asking.
+- **Network info** on the Receive page: device name, IP addresses and port.
+- **Keeps working after switching apps**: OldSend reopens the sockets iOS reclaims from suspended apps, asks for a few minutes of background time so transfers can finish, and posts a notification for incoming requests while in the background.
+- **Robust receiving**: waits out Wi-Fi stalls of up to 20 seconds and recovers when a sender disappears.
+- **Sharp on Retina screens**: every interface image has an @2x version, file-type icons are a vector-drawn set (`tools/make_file_icons.py`), there are launch images, and the app icons follow Apple's iOS 6 template (`tools/make_app_icons.py`).
+- **Native Objective-C / UIKit**, with no dependency on Flutter, Electron or web runtimes. English and Simplified Chinese interface.
 
 > Requires a jailbroken device with iOS 6 or later (armv7) and MobileSubstrate. OldSend is installed as a system app under `/Applications`.
 
@@ -54,7 +48,6 @@ Upstream's `build.sh` (macOS, iPhoneOS 3.1.3 SDK, armv6) is still in the reposit
 - [mbedTLS](https://github.com/Mbed-TLS/mbedtls) — Apache-2.0
 - [cJSON](https://github.com/DaveGamble/cJSON) — MIT
 - Icons drawn from [Material Icons](https://github.com/google/material-design-icons) — Apache-2.0
-- Upstream notes that some of its code was generated using DeepSeek v4.1 Flash under human supervision.
 
 OldSend is licensed under Apache-2.0, like the original; files changed from upstream are listed in the git history.
 
