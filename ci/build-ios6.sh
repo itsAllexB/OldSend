@@ -48,7 +48,8 @@ done
 # iOS 6 share sheet. Runtime API only, so it does not link against Substrate.
 "$CC" -target "armv7-apple-ios$MIN" -isysroot "$SDK" -O2 -marm -mno-thumb -fno-objc-arc -fblocks -fno-modules -Ishare     -dynamiclib -install_name /Library/MobileSubstrate/DynamicLibraries/OldSendShare.dylib     -framework UIKit -framework Foundation -framework CoreFoundation     share/OldSendShare.m -o "$OUT/OldSendShare.dylib"
 
-ldid -S "$APP/OldSend"
+# OldSend adds songs to the Music library, which needs FairPlay (see ci/OldSend.entitlements).
+ldid -Sci/OldSend.entitlements "$APP/OldSend"
 ldid -S "$APP/MediaPicker.dylib"
 ldid -S "$OUT/OldSendShare.dylib"
 

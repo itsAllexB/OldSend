@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- FairPlay client id (the Music app's): MusicLibrary.framework signs each track's integrity
+	     blob with FairPlay, and iOS 6's player won't play a song whose integrity doesn't verify. -->
+	<key>fairplay-client</key>
+	<integer>1974055701</integer>
+</dict>
+</plist>

@@ -55,6 +55,10 @@
 - (void)setArtworkData:(NSData *)data;
 - (void)setValue:(id)value forEntityProperty:(NSString *)property;
 + (BOOL)trackWithPersistentID:(long long)persistentID existsInLibrary:(id)library;
+- (id)initWithPersistentID:(long long)persistentID inLibrary:(id)library;
+- (NSData *)rawIntegrity;
+- (BOOL)updateIntegrity;
+- (void)performTransactionWithBlock:(BOOL (^)(void))block;
 @end
 
 BOOL OSAddToMusicEnabled(void) {
@@ -399,6 +403,25 @@ static OSMusicResult os_add_locked(NSString *path, NSString **detail) {
         }
         *detail = @"the music library did not accept it";
         return OSMusicFailed;
+    }
+
+    /* iOS 6's player only plays a track whose integrity blob verifies (MPMediaItem's
+       "verifiedIntegrity"). The importer writes it when this process may use FairPlay (OldSend is
+       signed with a fairplay-client entitlement); make sure it is there. */
+    if (trackClass != Nil && [trackClass instancesRespondToSelector:@selector(updateIntegrity)] &&
+        [trackClass instancesRespondToSelector:@selector(initWithPersistentID:inLibrary:)]) {
+        id track = [[trackClass alloc] initWithPersistentID:persistentID inLibrary:library];
+        if (track != nil && [track rawIntegrity] == nil) {
+            __block BOOL updated = NO;
+            [library performTransactionWithBlock:^BOOL {
+                updated = [track updateIntegrity];
+                return YES;
+            }];
+            if (!updated || [track rawIntegrity] == nil) {
+                NSLog(@"OldSend: could not sign the integrity of %@; the Music app won't play it", destination);
+            }
+        }
+        [track release];
     }
 
     if (copied) [manager removeItemAtPath:path error:NULL];
