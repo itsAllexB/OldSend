@@ -6,6 +6,7 @@
     UIButton *_randomButton;
     UISwitch *_quickSaveSwitch;
     UISwitch *_photosSwitch;
+    UISwitch *_backgroundSwitch;
 }
 
 @end

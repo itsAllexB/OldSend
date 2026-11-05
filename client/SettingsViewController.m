@@ -1,6 +1,7 @@
 #import "SettingsViewController.h"
 #import "OSPlatform.h"
 #import "OSServer.h"
+#import "OSDaemon.h"
 
 @interface SettingsPatternView : UIView
 @end
@@ -114,7 +115,7 @@
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (section == 0) return 3;
-    if (section == 1) return 3;
+    if (section == 1) return 4;
     return 1;
 }
 
@@ -126,6 +127,7 @@
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (section == 0) return NSLocalizedString(@"settings.save_photos_footer", nil);
+    if (section == 1) return NSLocalizedString(@"settings.background_footer", nil);
     return nil;
 }
 
@@ -236,11 +238,29 @@
 
     if (indexPath.section == 1) {
         if (indexPath.row == 0) {
+            static NSString *identifier = @"BackgroundCell";
+            UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:identifier];
+            if (cell == nil) {
+                cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                               reuseIdentifier:identifier] autorelease];
+                cell.selectionStyle = UITableViewCellSelectionStyleNone;
+                cell.textLabel.text = NSLocalizedString(@"settings.background", nil);
+
+                _backgroundSwitch = [[UISwitch alloc] init];
+                [_backgroundSwitch addTarget:self
+                                      action:@selector(backgroundChanged:)
+                            forControlEvents:UIControlEventValueChanged];
+                cell.accessoryView = _backgroundSwitch;
+            }
+            _backgroundSwitch.on = OSDaemonEnabled();
+            return cell;
+        }
+        if (indexPath.row == 1) {
             return [self valueCellWithTitle:NSLocalizedString(@"settings.listen_address", nil)
                                       value:[NSString stringWithFormat:@"%@:%d",
                                              [server localIP], [server port]]];
         }
-        if (indexPath.row == 1) {
+        if (indexPath.row == 2) {
             return [self valueCellWithTitle:NSLocalizedString(@"settings.protocol", nil)
                                       value:NSLocalizedString(@"settings.protocol_value", nil)];
         }
@@ -276,7 +296,7 @@ forRowAtIndexPath:(NSIndexPath *)indexPath {
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    if (indexPath.section == 1 && indexPath.row == 2) {
+    if (indexPath.section == 1 && indexPath.row == 3) {
         [[OSServer shared] announceNow];
         UIAlertView *alert = [[UIAlertView alloc] initWithTitle:NSLocalizedString(@"settings.announce", nil)
                                                         message:NSLocalizedString(@"settings.announce_done", nil)
@@ -304,11 +324,17 @@ forRowAtIndexPath:(NSIndexPath *)indexPath {
 - (void)quickSaveChanged:(UISwitch *)sender {
     [[NSUserDefaults standardUserDefaults] setBool:sender.on forKey:@"quick_save"];
     [[NSUserDefaults standardUserDefaults] synchronize];
+    [[OSDaemonClient shared] settingsChanged];
 }
 
 - (void)savePhotosChanged:(UISwitch *)sender {
     [[NSUserDefaults standardUserDefaults] setBool:sender.on forKey:@"save_to_photos"];
     [[NSUserDefaults standardUserDefaults] synchronize];
+    [[OSDaemonClient shared] settingsChanged];
+}
+
+- (void)backgroundChanged:(UISwitch *)sender {
+    OSSetDaemonEnabled(sender.on);
 }
 
 - (BOOL)textFieldShouldReturn:(UITextField *)textField {
@@ -338,6 +364,7 @@ forRowAtIndexPath:(NSIndexPath *)indexPath {
     [_randomButton release];
     [_quickSaveSwitch release];
     [_photosSwitch release];
+    [_backgroundSwitch release];
     [super dealloc];
 }
 

@@ -54,8 +54,80 @@ NSString *OSFormatDuration(NSTimeInterval seconds) {
         _state = sending ? OSTransferStateWaiting : OSTransferStateRunning;
         _startTime = [NSDate timeIntervalSinceReferenceDate];
         _samples = [[NSMutableArray alloc] init];
+        _identifier = [[NSString alloc] initWithFormat:@"%.3f-%u", _startTime, (unsigned)arc4random()];
     }
     return self;
+}
+
+- (NSDictionary *)snapshot {
+    NSMutableArray *files = [NSMutableArray arrayWithCapacity:[_files count]];
+    for (OSTransferFile *file in _files) {
+        [files addObject:[NSDictionary dictionaryWithObjectsAndKeys:
+                          file.name != nil ? file.name : @"", @"name",
+                          [NSNumber numberWithLongLong:file.size], @"size",
+                          [NSNumber numberWithLongLong:file.written], @"written",
+                          [NSNumber numberWithInt:file.state], @"state", nil]];
+    }
+    return [NSDictionary dictionaryWithObjectsAndKeys:
+            _identifier, @"id",
+            [NSNumber numberWithBool:_sending], @"sending",
+            _peerAlias != nil ? _peerAlias : @"", @"peer",
+            _peerType != nil ? _peerType : @"", @"type",
+            [NSNumber numberWithInt:_state], @"state",
+            _message != nil ? _message : @"", @"message",
+            [NSNumber numberWithDouble:[self elapsed]], @"elapsed",
+            files, @"files", nil];
+}
+
+- (id)initWithSnapshot:(NSDictionary *)snapshot {
+    NSMutableArray *files = [NSMutableArray array];
+    for (NSDictionary *file in [snapshot objectForKey:@"files"]) {
+        [files addObject:[NSDictionary dictionaryWithObjectsAndKeys:
+                          [file objectForKey:@"name"], @"name", [file objectForKey:@"size"], @"size", nil]];
+    }
+    if ((self = [self initSending:[[snapshot objectForKey:@"sending"] boolValue]
+                             peer:[snapshot objectForKey:@"peer"]
+                             type:[snapshot objectForKey:@"type"]
+                            files:files])) {
+        [_identifier release];
+        _identifier = [[snapshot objectForKey:@"id"] copy];
+        _remote = YES;
+        _startTime = [NSDate timeIntervalSinceReferenceDate] - [[snapshot objectForKey:@"elapsed"] doubleValue];
+        [self applySnapshot:snapshot];
+    }
+    return self;
+}
+
+- (void)applySnapshot:(NSDictionary *)snapshot {
+    NSArray *files = [snapshot objectForKey:@"files"];
+    OSTransferState state = (OSTransferState)[[snapshot objectForKey:@"state"] intValue];
+    NSUInteger i;
+
+    if (![self isActive]) return;
+    for (i = 0; i < [files count] && i < [_files count]; i++) {
+        NSDictionary *info = [files objectAtIndex:i];
+        OSTransferFile *file = [_files objectAtIndex:i];
+        file.written = [[info objectForKey:@"written"] longLongValue];
+        file.state = (OSTransferFileState)[[info objectForKey:@"state"] intValue];
+    }
+    [self addSample];
+    if (state == OSTransferStateRunning || state == OSTransferStateWaiting) {
+        if (_state != state) {
+            _state = state;
+            [self changed];
+        }
+        return;
+    }
+    {
+        NSString *message = [snapshot objectForKey:@"message"];
+        NSTimeInterval elapsed = [[snapshot objectForKey:@"elapsed"] doubleValue];
+        _state = state;
+        [_message release];
+        _message = [message length] > 0 ? [message copy] : nil;
+        _endTime = [NSDate timeIntervalSinceReferenceDate];
+        _startTime = _endTime - elapsed;
+        [self changed];
+    }
 }
 
 - (void)changed {
@@ -211,6 +283,7 @@ NSString *OSFormatDuration(NSTimeInterval seconds) {
     [_files release];
     [_message release];
     [_samples release];
+    [_identifier release];
     [super dealloc];
 }
 

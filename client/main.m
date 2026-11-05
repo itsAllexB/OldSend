@@ -1,9 +1,19 @@
 #import <UIKit/UIKit.h>
+#include <string.h>
 #import "AppDelegate.h"
+#import "OSDaemon.h"
 
 int main(int argc, char *argv[]) {
-    NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
-    int ret = UIApplicationMain(argc, argv, nil, @"AppDelegate");
+    NSAutoreleasePool *pool;
+    int ret;
+
+    /* launchd starts the same binary as the background service (Settings > Run in Background). */
+    if (argc > 1 && strcmp(argv[1], "--daemon") == 0) {
+        return OSDaemonMain();
+    }
+
+    pool = [[NSAutoreleasePool alloc] init];
+    ret = UIApplicationMain(argc, argv, nil, @"AppDelegate");
     [pool release];
     return ret;
 }

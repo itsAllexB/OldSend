@@ -1,6 +1,7 @@
 #import "OSServer.h"
 #import "OSHUD.h"
 #import "OSTransfer.h"
+#import "OSDaemon.h"
 #import <UIKit/UIKit.h>
 
 #include <sys/types.h>
@@ -92,7 +93,7 @@ static volatile int gSendFD = -1;
 static void os_file_log(NSString *line) {
     FILE *file = fopen("/var/mobile/oldsend.log", "a");
     if (file == NULL) return;
-    fprintf(file, "%s\n", [line UTF8String]);
+    fprintf(file, "%s%s\n", OSIsHeadless() ? "[background] " : "", [line UTF8String]);
     fflush(file);
     fclose(file);
 }
@@ -1070,6 +1071,34 @@ static void os_apply_transfer_event(OSTransfer *transfer, NSArray *event) {
 - (void)startReceiveTransfer:(NSArray *)info {
     [_receiveTransfer release];
     _receiveTransfer = [self startTransferSending:NO info:info];
+    if (OSIsHeadless()) {
+        /* The app (if it is opened) shows this transfer from transfer.plist. */
+        OSDaemonHoldAwake(YES);
+        OSDaemonPublishTransfer(_receiveTransfer);
+        if (_publishTimer == nil) {
+            _publishTimer = [[NSTimer scheduledTimerWithTimeInterval:0.4 target:self
+                                                            selector:@selector(publishTransfer:)
+                                                            userInfo:nil repeats:YES] retain];
+        }
+    }
+}
+
+- (void)publishTransfer:(NSTimer *)timer {
+    OSTransfer *transfer = _receiveTransfer;
+
+    OSDaemonPublishTransfer(transfer);
+    if (transfer != nil && [transfer isActive]) return;
+    [_publishTimer invalidate];
+    [_publishTimer release];
+    _publishTimer = nil;
+    OSDaemonHoldAwake(NO);
+    if (transfer.state == OSTransferStateFinished) {
+        OSDaemonNotify([NSString stringWithFormat:NSLocalizedString(@"daemon.received", nil),
+                        (int)[transfer finishedFileCount], transfer.peerAlias]);
+    } else if (transfer.state == OSTransferStateFailed) {
+        OSDaemonNotify([NSString stringWithFormat:NSLocalizedString(@"daemon.interrupted", nil),
+                        transfer.peerAlias]);
+    }
 }
 
 - (void)receiveTransferEvent:(NSArray *)event {
@@ -1189,6 +1218,7 @@ static void os_apply_transfer_event(OSTransfer *transfer, NSArray *event) {
     [[NSUserDefaults standardUserDefaults] setObject:_alias forKey:@"device_alias"];
     [[NSUserDefaults standardUserDefaults] synchronize];
     [self announceNow];
+    if (!OSIsHeadless()) [[OSDaemonClient shared] settingsChanged];
     [self appendLog:[NSString stringWithFormat:@"Alias changed to %@", _alias]];
 }
 
@@ -1310,6 +1340,14 @@ static void os_apply_transfer_event(OSTransfer *transfer, NSArray *event) {
         return;
     }
     if ([_receivedTexts count] == 0) return;
+    if (OSIsHeadless()) {
+        NSString *first = [_receivedTexts objectAtIndex:0];
+        if ([first length] > 80) first = [[first substringToIndex:80] stringByAppendingString:@"\u2026"];
+        OSDaemonAddTexts(_receivedTexts, [NSString stringWithFormat:
+                                          NSLocalizedString(@"daemon.text_received", nil), first]);
+        [_receivedTexts removeAllObjects];
+        return;
+    }
 
     combined = [_receivedTexts componentsJoinedByString:@"\n\n"];
     [[NSNotificationCenter defaultCenter] postNotificationName:OSServerDidReceiveTextNotification
@@ -1473,6 +1511,7 @@ static void os_apply_transfer_event(OSTransfer *transfer, NSArray *event) {
         return;
     }
 
+    if (OSIsHeadless()) return;
     alert = [[UIAlertView alloc] initWithTitle:NSLocalizedString(@"receive.complete_title", nil)
                                        message:[NSString stringWithFormat:
                                                 NSLocalizedString(@"receive.complete_message", nil),
@@ -1540,6 +1579,10 @@ static void os_apply_transfer_event(OSTransfer *transfer, NSArray *event) {
         [self performSelectorOnMainThread:@selector(showTransferFailedAlert)
                                withObject:nil
                             waitUntilDone:NO];
+        return;
+    }
+    if (OSIsHeadless()) {
+        OSDaemonNotify(NSLocalizedString(@"receive.interrupted_message", nil));
         return;
     }
     {
@@ -1732,7 +1775,7 @@ static void os_apply_transfer_event(OSTransfer *transfer, NSArray *event) {
 }
 
 - (void)announceNow {
-    if (!_running) return;
+    if (!_running || _paused) return;
 
     int fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd < 0) return;
@@ -1873,6 +1916,15 @@ static void os_apply_transfer_event(OSTransfer *transfer, NSArray *event) {
 
         /* Like the TCP listener: reopen (and rejoin the multicast group) after a failure or
            when the app returns to the foreground, possibly on a different network. */
+        if (_paused) {
+            if (fd >= 0) {
+                close(fd);
+                fd = -1;
+            }
+            [pool release];
+            sleep(1);
+            continue;
+        }
         if (fd < 0 || generation != _networkGeneration) {
             if (fd >= 0) close(fd);
             generation = _networkGeneration;
@@ -2045,12 +2097,11 @@ static void os_apply_transfer_event(OSTransfer *transfer, NSArray *event) {
     [NSThread detachNewThreadSelector:@selector(discoveryThreadMain)
                              toTarget:self
                            withObject:nil];
-    [NSThread detachNewThreadSelector:@selector(retryPendingPhotosThread)
-                             toTarget:self
-                           withObject:nil];
+    [self retryPendingPhotos];
 
     [self announceNow];
-    _announceTimer = [[NSTimer scheduledTimerWithTimeInterval:5.0
+    /* The background service announces once a minute: peers that scan get an answer anyway. */
+    _announceTimer = [[NSTimer scheduledTimerWithTimeInterval:OSIsHeadless() ? 60.0 : 5.0
                                                       target:self
                                                     selector:@selector(announceTimerFired:)
                                                     userInfo:nil
@@ -2142,9 +2193,35 @@ static int os_open_discovery_socket(OSServer *server, BOOL log) {
     }
     /* The network threads reopen their sockets when they see a new generation. */
     _networkGeneration++;
-    os_logf(self, @"Back in the foreground, reopening sockets");
+    os_logf(self, @"Reopening sockets (back in the foreground, or the network changed)");
     [self announceNow];
     [[NSNotificationCenter defaultCenter] postNotificationName:OSServerDidUpdateNotification object:self];
+}
+
+- (void)setPaused:(BOOL)paused {
+    if (_paused == paused) return;
+    _paused = paused;
+    os_logf(self, paused ? @"Paused" : @"Serving");
+    if (!paused) {
+        _networkGeneration++;
+        [self announceNow];
+    }
+}
+
+- (BOOL)isPaused {
+    return _paused;
+}
+
+- (BOOL)hasActiveSession {
+    return gSession.active || _decisionAlert != nil ||
+           (_receiveTransfer != nil && [_receiveTransfer isActive]) ||
+           (_sendTransfer != nil && [_sendTransfer isActive]);
+}
+
+- (void)retryPendingPhotos {
+    if (_retryingPhotos || OSIsHeadless()) return;
+    _retryingPhotos = YES;
+    [NSThread detachNewThreadSelector:@selector(retryPendingPhotosThread) toTarget:self withObject:nil];
 }
 
 - (void)serverThreadMain {
@@ -2198,6 +2275,15 @@ static int os_open_discovery_socket(OSServer *server, BOOL log) {
         int clientFD;
         int ready;
 
+        if (_paused) {
+            if (listenFD >= 0) {
+                close(listenFD);
+                listenFD = -1;
+            }
+            [pool release];
+            sleep(1);
+            continue;
+        }
         if (listenFD < 0 || generation != _networkGeneration) {
             if (listenFD >= 0) close(listenFD);
             generation = _networkGeneration;
@@ -2875,7 +2961,8 @@ cleanup:
     NSString *message;
     BOOL textOnly = YES;
     BOOL accepted = NO;
-    BOOL quickSave = [[NSUserDefaults standardUserDefaults] boolForKey:@"quick_save"];
+    BOOL quickSave = ([[NSUserDefaults standardUserDefaults] synchronize],
+                      [[NSUserDefaults standardUserDefaults] boolForKey:@"quick_save"]);
     int images = 0, videos = 0, audio = 0, textFiles = 0, other = 0;
     int i;
 
@@ -3028,7 +3115,15 @@ cleanup:
         [self performSelectorOnMainThread:@selector(setReceiveStatusText:)
                                withObject:NSLocalizedString(@"status.preparing", nil)
                             waitUntilDone:NO];
-        accepted = [self askToAcceptWithTitle:title message:message];
+        if (OSIsHeadless()) {
+            /* Background service: a notification; tapping it opens the app with the prompt. */
+            NSString *body = textOnly
+                ? [NSString stringWithFormat:NSLocalizedString(@"daemon.request_text", nil), sender]
+                : [NSString stringWithFormat:NSLocalizedString(@"daemon.request_files", nil), sender, session.count];
+            accepted = OSDaemonAsk(title, message, body);
+        } else {
+            accepted = [self askToAcceptWithTitle:title message:message];
+        }
     }
 
     if (!accepted) {
@@ -3366,6 +3461,9 @@ cleanup:
                 [self writeSavedMarkerForPath:[photo objectAtIndex:0]];
             }
             os_logf(self, @"Kept %d photo(s)/video(s) in the app (Save to Photos is off)", (int)[photos count]);
+        } else if ([photos count] > 0 && OSIsHeadless()) {
+            /* The app copies these into Photos the next time it is opened. */
+            os_logf(self, @"%d photo(s)/video(s) will go to Photos when OldSend is opened", (int)[photos count]);
         } else if ([photos count] > 0) {
             [self performSelectorOnMainThread:@selector(enqueuePhotoBatch:)
                                    withObject:photos
@@ -3636,6 +3734,7 @@ cleanup:
     NSArray *names;
 
     if (!OSSaveToPhotosEnabled()) {
+        _retryingPhotos = NO;
         [pool release];
         return;
     }
@@ -3671,6 +3770,7 @@ cleanup:
             [self writeSavedMarkerForPath:path];
         }
     }
+    _retryingPhotos = NO;
     [pool release];
 }
 

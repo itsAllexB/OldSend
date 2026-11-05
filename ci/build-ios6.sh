@@ -71,6 +71,12 @@ mkdir -p "$STAGE/DEBIAN" "$STAGE/Applications" "$STAGE/Library/MobileSubstrate/D
 cp ci/control "$STAGE/DEBIAN/control"
 cp -R "$APP" "$STAGE/Applications/"
 cp "$OUT/OldSendShare.dylib" share/OldSendShare.plist "$STAGE/Library/MobileSubstrate/DynamicLibraries/"
+# The background service job, and the scripts that load and unload it.
+mkdir -p "$STAGE/Library/LaunchDaemons"
+cp ci/com.lihaoyun6.oldsendd.plist "$STAGE/Library/LaunchDaemons/"
+chmod 644 "$STAGE/Library/LaunchDaemons/com.lihaoyun6.oldsendd.plist"
+cp ci/postinst ci/prerm "$STAGE/DEBIAN/"
+chmod 755 "$STAGE/DEBIAN/postinst" "$STAGE/DEBIAN/prerm"
 chmod 755 "$STAGE/Library/MobileSubstrate/DynamicLibraries/OldSendShare.dylib"
 chmod 644 "$STAGE/Library/MobileSubstrate/DynamicLibraries/OldSendShare.plist"
 dpkg-deb -Zgzip --root-owner-group -b "$STAGE" "packages/com.lihaoyun6.oldsend_${VERSION}_iphoneos-arm.deb"

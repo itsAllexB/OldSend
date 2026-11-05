@@ -12,6 +12,7 @@
 #import "OSTransfer.h"
 #import "TransferViewController.h"
 #import "OSShareInbox.h"
+#import "OSDaemon.h"
 
 @interface UIWindow (OSRootViewController)
 - (void)setRootViewController:(UIViewController *)controller;
@@ -251,6 +252,12 @@ static BOOL OSIsWiFiReachable(void) {
         [[OSServer shared] appendLog:@"Background time is up"];
         [self endBackgroundTask];
     }];
+    /* With Run in Background on, the background service takes over (once a transfer is done). */
+    [[OSDaemonClient shared] appDidEnterBackground];
+}
+
+- (void)applicationDidBecomeActive:(UIApplication *)application {
+    [[OSDaemonClient shared] appDidBecomeActive];
 }
 
 - (void)applicationWillEnterForeground:(UIApplication *)application {
@@ -260,6 +267,7 @@ static BOOL OSIsWiFiReachable(void) {
 }
 
 - (void)applicationWillTerminate:(UIApplication *)application {
+    [[OSDaemonClient shared] appWillTerminate];
     [[UIApplication sharedApplication] setIdleTimerDisabled:NO];
     [[OSServer shared] stop];
 }

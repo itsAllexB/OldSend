@@ -54,6 +54,9 @@ BOOL OSSaveToPhotosEnabled(void);
     volatile NSUInteger _networkGeneration;
     OSTransfer *_sendTransfer;
     OSTransfer *_receiveTransfer;
+    volatile BOOL _paused;
+    NSTimer *_publishTimer;
+    volatile BOOL _retryingPhotos;
 }
 
 + (OSServer *)shared;
@@ -64,6 +67,14 @@ BOOL OSSaveToPhotosEnabled(void);
 - (void)stop;
 /* Call when the app returns to the foreground: reopens the sockets iOS may have reclaimed. */
 - (void)resume;
+/* Paused: no listening, discovery or announcements (the app and the background service hand
+   the port to each other this way). */
+- (void)setPaused:(BOOL)paused;
+- (BOOL)isPaused;
+/* A request waiting for an answer, or a transfer running, in either direction. */
+- (BOOL)hasActiveSession;
+/* Copies received photos/videos not yet in Photos into Photos (if Save to Photos is on). */
+- (void)retryPendingPhotos;
 - (void)announceNow;
 - (void)refreshDevices;
 

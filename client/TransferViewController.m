@@ -3,6 +3,7 @@
 #import "OSServer.h"
 #import "OSPlatform.h"
 #import "FileTypeIcon.h"
+#import "OSDaemon.h"
 
 #define OS_PANEL_HEIGHT 112.0f
 #define OS_HEADER_HEIGHT 64.0f
@@ -271,7 +272,10 @@ static NSString *os_device_icon(NSString *type) {
 }
 
 - (void)cancelTapped:(id)sender {
-    if (_transfer.sending) {
+    if (_transfer.remote) {
+        /* Run by the background service. */
+        [[OSDaemonClient shared] cancelRemoteTransfer];
+    } else if (_transfer.sending) {
         [[OSServer shared] cancelSending];
     } else {
         [[OSServer shared] cancelReceiving];

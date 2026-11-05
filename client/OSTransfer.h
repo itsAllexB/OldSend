@@ -46,6 +46,8 @@ typedef enum {
     NSTimeInterval _startTime;
     NSTimeInterval _endTime;
     NSMutableArray *_samples;
+    NSString *_identifier;
+    BOOL _remote;
 }
 @property (nonatomic, readonly) BOOL sending;
 @property (nonatomic, readonly) NSString *peerAlias;
@@ -53,9 +55,17 @@ typedef enum {
 @property (nonatomic, readonly) NSArray *files;
 @property (nonatomic, readonly) OSTransferState state;
 @property (nonatomic, readonly) NSString *message;
+@property (nonatomic, readonly) NSString *identifier;
+/* Mirrors a transfer run by the background service (Cancel goes to the service). */
+@property (nonatomic, readonly) BOOL remote;
 
 /* files: NSDictionaries with "name" (NSString) and "size" (NSNumber). */
 - (id)initSending:(BOOL)sending peer:(NSString *)alias type:(NSString *)deviceType files:(NSArray *)files;
+
+/* For the background service: a property-list copy of the transfer, and a remote mirror of one. */
+- (NSDictionary *)snapshot;
+- (id)initWithSnapshot:(NSDictionary *)snapshot;
+- (void)applySnapshot:(NSDictionary *)snapshot;
 
 - (void)setRunning;
 - (void)fileStarted:(NSInteger)index;

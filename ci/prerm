@@ -1,0 +1,4 @@
+#!/bin/sh
+# Stop and unload the background service before the files are replaced or removed.
+launchctl unload /Library/LaunchDaemons/com.lihaoyun6.oldsendd.plist 2>/dev/null
+exit 0

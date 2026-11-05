@@ -10,6 +10,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #include <dlfcn.h>
+#include <notify.h>
 
 #import "OSShareIcon.h"
 
@@ -252,11 +253,62 @@ static id os_init_with_items(id self, SEL _cmd, NSArray *items, NSArray *activit
     return os_original_init(self, _cmd, items, list);
 }
 
+/* In SpringBoard: post the notifications OldSend's background service queues as
+   /var/mobile/Library/OldSend/daemon/notify-*.plist. A process without an app of its own cannot
+   post an app's notification, so SpringBoard schedules them as OldSend's local notifications;
+   tapping one opens OldSend. */
+@interface NSObject (OSSpringBoard)
++ (id)sharedInstance;
+- (id)applicationWithDisplayIdentifier:(NSString *)identifier;
+- (void)scheduleLocalNotifications:(NSArray *)notifications replaceExistingNotifications:(BOOL)replace;
+@end
+
+static void os_post_service_notifications(void) {
+    NSString *directory = @"/var/mobile/Library/OldSend/daemon";
+    NSFileManager *manager = [NSFileManager defaultManager];
+    NSArray *names = [[manager contentsOfDirectoryAtPath:directory error:NULL]
+                      sortedArrayUsingSelector:@selector(compare:)];
+    NSMutableArray *notifications = [NSMutableArray array];
+    Class controller = NSClassFromString(@"SBApplicationController");
+    id app;
+
+    for (NSString *name in names) {
+        NSString *path;
+        NSString *body;
+        UILocalNotification *notification;
+
+        if (![name hasPrefix:@"notify-"]) continue;
+        path = [directory stringByAppendingPathComponent:name];
+        body = [[NSDictionary dictionaryWithContentsOfFile:path] objectForKey:@"body"];
+        [manager removeItemAtPath:path error:NULL];
+        if (![body isKindOfClass:[NSString class]] || [body length] == 0) continue;
+        notification = [[[UILocalNotification alloc] init] autorelease];
+        notification.fireDate = [NSDate dateWithTimeIntervalSinceNow:0.5];
+        notification.alertBody = body;
+        notification.soundName = UILocalNotificationDefaultSoundName;
+        [notifications addObject:notification];
+    }
+    if ([notifications count] == 0 || controller == Nil) return;
+    app = [[controller sharedInstance] applicationWithDisplayIdentifier:@"com.lihaoyun6.oldsend"];
+    if ([app respondsToSelector:@selector(scheduleLocalNotifications:replaceExistingNotifications:)]) {
+        [app scheduleLocalNotifications:notifications replaceExistingNotifications:NO];
+    }
+}
+
 __attribute__((constructor)) static void os_share_init(void) {
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
     NSString *bundle = [[NSBundle mainBundle] bundleIdentifier];
     Class controller = NSClassFromString(@"UIActivityViewController");
     Method method;
+
+    if ([bundle isEqualToString:@"com.apple.springboard"]) {
+        int token;
+        notify_register_dispatch("com.lihaoyun6.oldsend.notify", &token, dispatch_get_main_queue(), ^(int t) {
+            NSAutoreleasePool *inner = [[NSAutoreleasePool alloc] init];
+            os_post_service_notifications();
+            [inner release];
+        });
+    }
 
     if (controller != Nil && ![bundle isEqualToString:@"com.lihaoyun6.oldsend"]) {
         method = class_getInstanceMethod(controller, @selector(initWithActivityItems:applicationActivities:));
