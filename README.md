@@ -23,7 +23,7 @@ OldSend 2.0 is my version of [OldSend by lihaoyun6](https://github.com/lihaoyun6
 - **Sharp on Retina screens**: every interface image has an @2x version, file-type icons are a vector-drawn set (`tools/make_file_icons.py`), there are launch images, and the app icons follow Apple's iOS 6 template (`tools/make_app_icons.py`).
 - **Native Objective-C / UIKit**, with no dependency on Flutter, Electron or web runtimes. English and Simplified Chinese interface.
 
-> Requires a jailbroken device with iOS 6 or later (armv7) and MobileSubstrate. OldSend is installed as a system app under `/Applications`.
+> Requires a jailbroken iOS 6 device (armv7) with MobileSubstrate; the package installs on iOS 6.x only. OldSend is installed as a system app under `/Applications`.
 
 ## Installation
 
