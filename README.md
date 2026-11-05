@@ -15,10 +15,11 @@ OldSend 2.0 is my version of [OldSend by lihaoyun6](https://github.com/lihaoyun6
 - **Live transfer screen**, like LocalSend's: every file with its own progress and state (waiting, sending, done, skipped, failed), plus overall progress, files, size, speed and time left, with Cancel while it runs. Files the receiver leaves out are skipped instead of failing the whole send.
 - **OldSend in the share sheet of every app.** A small MobileSubstrate add-on (`share/`) puts an OldSend button into the iOS 6 share sheet (Safari, Photos and any app using `UIActivityViewController`); links, text, photos, videos and files shared with it open in OldSend's Send tab, ready to send. OldSend also appears under "Open in…" for any file.
 - **Run in Background** (Settings, off by default): a background service (the same binary, started by launchd at boot, `client/OSDaemon.m`) keeps the phone discoverable and able to receive with OldSend closed. Incoming requests show a notification; tapping it opens OldSend with the Accept / Decline prompt and the live transfer screen. The app and the service hand the port to each other automatically, the service follows Wi-Fi network changes, and it keeps the phone awake only while files are coming in. While the phone sleeps, iOS pauses it like any app, so it costs no battery while waiting.
-- **Save to Photos switch** in Settings: turn it off to keep received photos and videos in History only.
+- **Save to Photos switch** in Settings: on, received photos and videos are moved into Photos (one copy, like LocalSend); off, they stay in History.
+- **Network info** on the Receive page (device name, IP addresses, port), and on the Send page tapping a device with nothing chosen opens the Add choices.
 - **Keeps working after switching apps.** iOS reclaims the sockets of a suspended app, which used to stop OldSend from receiving until it was restarted. It now reopens them when it returns to the foreground, asks iOS for a few minutes of background time so transfers can finish, and posts a notification for incoming requests while in the background.
 - **More robust receiving:** waits out Wi-Fi stalls of up to 20 seconds instead of 5, and no longer stays "busy" forever when a sender disappears after you accept.
-- **Sharp on Retina screens.** Every interface image has an @2x version, the app icon is redrawn at all sizes, the file-type icons are a new vector-drawn set (`tools/make_file_icons.py`), since the originals only existed at 32 px, and there are launch images instead of a black screen at start.
+- **Sharp on Retina screens.** Every interface image has an @2x version, the app icon is redrawn at all sizes, the file-type icons are a new vector-drawn set (`tools/make_file_icons.py`), since the originals only existed at 32 px, and there are launch images instead of a black screen at start. iOS 6 draws the icons of apps in `/Applications` exactly as supplied (no rounded mask), so `tools/make_app_icons.py` cuts the corners into every size.
 
 ## Features
 
@@ -32,7 +33,7 @@ OldSend 2.0 is my version of [OldSend by lihaoyun6](https://github.com/lihaoyun6
 
 ## Installation
 
-Add the **ios-legacy** source to Cydia, `https://itsallexb.github.io/ios-legacy/`, and install OldSend. Or download the `.deb` from this repository's releases and install it with `dpkg -i`.
+Add the **ios-legacy** source to Cydia, `https://itsallexb.github.io/ios-legacy/`, and install OldSend (package `com.itsallexb.oldsend`; it replaces lihaoyun6's `com.lihaoyun6.oldsend` if that is installed). Or download the `.deb` from this repository's releases and install it with `dpkg -i`.
 
 Install the `.deb`, not an IPA: OldSend keeps its TLS identity in `/var/mobile/Library/OldSend`, which a sandboxed IPA install cannot create.
 
