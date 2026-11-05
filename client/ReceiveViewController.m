@@ -161,6 +161,7 @@
                                                                  style:UIBarButtonItemStyleBordered
                                                                 target:self
                                                                 action:@selector(infoTapped:)];
+        item.width = 33.0f;  /* as wide as the Send page's refresh and + buttons */
         self.navigationItem.rightBarButtonItem = item;
         [item release];
     }
