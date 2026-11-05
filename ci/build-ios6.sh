@@ -43,8 +43,13 @@ done
     -framework CoreGraphics -framework AssetsLibrary \
     media/MediaPickerViewController.m -o "$APP/MediaPicker.dylib"
 
+# The share-sheet add-on (share/): loaded into apps by MobileSubstrate, adds "OldSend" to the
+# iOS 6 share sheet. Runtime API only, so it does not link against Substrate.
+"$CC" -target "armv7-apple-ios$MIN" -isysroot "$SDK" -O2 -marm -mno-thumb -fno-objc-arc -fblocks -fno-modules -Ishare     -dynamiclib -install_name /Library/MobileSubstrate/DynamicLibraries/OldSendShare.dylib     -framework UIKit -framework Foundation -framework CoreFoundation     share/OldSendShare.m -o "$OUT/OldSendShare.dylib"
+
 ldid -S "$APP/OldSend"
 ldid -S "$APP/MediaPicker.dylib"
+ldid -S "$OUT/OldSendShare.dylib"
 
 # Resources: everything upstream's bundle step copies, plus any @2x (Retina) versions.
 cp client/Info.plist "$APP/"
@@ -62,8 +67,11 @@ find "$APP" -type f ! -name OldSend ! -name MediaPicker.dylib -exec chmod 644 {}
 # macOS-made .deb carried pax headers with macOS metadata that it rejects).
 VERSION=$(sed -n 's/^Version: //p' ci/control)
 STAGE="$OUT/deb"
-mkdir -p "$STAGE/DEBIAN" "$STAGE/Applications"
+mkdir -p "$STAGE/DEBIAN" "$STAGE/Applications" "$STAGE/Library/MobileSubstrate/DynamicLibraries"
 cp ci/control "$STAGE/DEBIAN/control"
 cp -R "$APP" "$STAGE/Applications/"
+cp "$OUT/OldSendShare.dylib" share/OldSendShare.plist "$STAGE/Library/MobileSubstrate/DynamicLibraries/"
+chmod 755 "$STAGE/Library/MobileSubstrate/DynamicLibraries/OldSendShare.dylib"
+chmod 644 "$STAGE/Library/MobileSubstrate/DynamicLibraries/OldSendShare.plist"
 dpkg-deb -Zgzip --root-owner-group -b "$STAGE" "packages/com.lihaoyun6.oldsend_${VERSION}_iphoneos-arm.deb"
 ls -l packages/

@@ -107,6 +107,11 @@ static void os_logf(OSServer *server, NSString *fmt, ...) {
 }
 
 static int os_open_listener(OSServer *server, BOOL log);
+
+BOOL OSSaveToPhotosEnabled(void) {
+    NSNumber *value = [[NSUserDefaults standardUserDefaults] objectForKey:@"save_to_photos"];
+    return value == nil || [value boolValue];  /* on unless turned off, as before the setting */
+}
 static int os_open_discovery_socket(OSServer *server, BOOL log);
 
 static NSString *os_json_escape(NSString *value) {
@@ -3354,7 +3359,14 @@ cleanup:
                                            [NSNumber numberWithInt:OSTransferStateFinished]]
                             waitUntilDone:NO];
 
-        if ([photos count] > 0) {
+        if ([photos count] > 0 && !OSSaveToPhotosEnabled()) {
+            /* Save to Photos is off: keep them in the app only, and mark them handled so the
+               retry at the next launch leaves them alone too. */
+            for (NSArray *photo in photos) {
+                [self writeSavedMarkerForPath:[photo objectAtIndex:0]];
+            }
+            os_logf(self, @"Kept %d photo(s)/video(s) in the app (Save to Photos is off)", (int)[photos count]);
+        } else if ([photos count] > 0) {
             [self performSelectorOnMainThread:@selector(enqueuePhotoBatch:)
                                    withObject:photos
                                 waitUntilDone:NO];
@@ -3623,6 +3635,10 @@ cleanup:
     NSString *markerDirectory = [directory stringByAppendingPathComponent:@".saved"];
     NSArray *names;
 
+    if (!OSSaveToPhotosEnabled()) {
+        [pool release];
+        return;
+    }
     [manager createDirectoryAtPath:markerDirectory
        withIntermediateDirectories:YES
                         attributes:nil

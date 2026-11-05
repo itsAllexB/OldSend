@@ -40,7 +40,7 @@ jobs:
 
       - name: Check the binaries
         run: |
-          for f in build-ios6/OldSend.app/OldSend build-ios6/OldSend.app/MediaPicker.dylib; do
+          for f in build-ios6/OldSend.app/OldSend build-ios6/OldSend.app/MediaPicker.dylib build-ios6/OldSendShare.dylib; do
             echo "== $f"
             "$THEOS/toolchain/linux/iphone/bin/lipo" -info "$f"
             "$THEOS/toolchain/linux/iphone/bin/otool" -l "$f" | grep -A3 LC_VERSION_MIN_IPHONEOS | grep version

@@ -8,6 +8,9 @@ extern NSString * const OSServerSendDidFinishNotification;
 extern NSString * const OSServerSendProgressNotification;
 extern NSString * const OSServerDidReceiveTextNotification;
 
+/* Settings > Save to Photos: copy received photos and videos into the Photos app (default on). */
+BOOL OSSaveToPhotosEnabled(void);
+
 @interface OSServer : NSObject {
 @private
     volatile BOOL _running;

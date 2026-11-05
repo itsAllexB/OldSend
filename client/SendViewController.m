@@ -592,6 +592,13 @@
     [_pendingItems removeAllObjects];
 }
 
+- (void)addSharedItems:(NSArray *)items {
+    [self view];  /* the pending list is created in viewDidLoad */
+    if ([items count] == 0) return;
+    [_pendingItems addObjectsFromArray:items];
+    [self refresh];
+}
+
 - (void)refreshDeviceSection {
     [self updateDeviceSummary];
     if ([_tableView numberOfSections] > 1) {

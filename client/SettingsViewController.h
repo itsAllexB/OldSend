@@ -5,6 +5,7 @@
     UITextField *_nicknameField;
     UIButton *_randomButton;
     UISwitch *_quickSaveSwitch;
+    UISwitch *_photosSwitch;
 }
 
 @end

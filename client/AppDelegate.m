@@ -11,6 +11,7 @@
 #import "OSNavigationController.h"
 #import "OSTransfer.h"
 #import "TransferViewController.h"
+#import "OSShareInbox.h"
 
 @interface UIWindow (OSRootViewController)
 - (void)setRootViewController:(UIViewController *)controller;
@@ -123,7 +124,9 @@ static BOOL OSIsWiFiReachable(void) {
     return [navigation autorelease];
 }
 
-- (void)applicationDidFinishLaunching:(UIApplication *)application {
+/* The ...WithOptions variant, so that a URL OldSend is launched with (share sheet, "Open in…")
+   is then delivered to application:openURL:sourceApplication:annotation:. */
+- (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
     _window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
 
     ReceiveViewController *receive = [[ReceiveViewController alloc] init];
@@ -184,6 +187,39 @@ static BOOL OSIsWiFiReachable(void) {
     [self performSelector:@selector(showWiFiAlertIfNeeded)
                withObject:nil
                afterDelay:1.5];
+    return YES;
+}
+
+- (BOOL)application:(UIApplication *)application
+            openURL:(NSURL *)url
+  sourceApplication:(NSString *)sourceApplication
+         annotation:(id)annotation {
+    NSArray *items;
+    UINavigationController *sendNavigation;
+    UIViewController *modal;
+
+    if (![OSShareInbox canHandleURL:url]) return NO;
+    items = [OSShareInbox itemsForURL:url];
+    [[OSServer shared] appendLog:[NSString stringWithFormat:@"Shared from %@: %d item(s)",
+                                  sourceApplication != nil ? sourceApplication : @"?", (int)[items count]]];
+
+    /* Show the Send tab with the shared items, on top of nothing but a running transfer. */
+    modal = _tabs.modalViewController;
+    if (modal != nil) {
+        UIViewController *top = [modal isKindOfClass:[UINavigationController class]]
+                              ? [(UINavigationController *)modal topViewController] : modal;
+        if (!([top isKindOfClass:[TransferViewController class]] &&
+              [[(TransferViewController *)top transfer] isActive])) {
+            [_tabs dismissModalViewControllerAnimated:NO];
+        }
+    }
+    _tabs.selectedIndex = 1;
+    sendNavigation = (UINavigationController *)_tabs.selectedViewController;
+    [sendNavigation popToRootViewControllerAnimated:NO];
+    if ([[sendNavigation.viewControllers objectAtIndex:0] respondsToSelector:@selector(addSharedItems:)]) {
+        [(SendViewController *)[sendNavigation.viewControllers objectAtIndex:0] addSharedItems:items];
+    }
+    return YES;
 }
 
 - (void)transferDidStart:(NSNotification *)notification {

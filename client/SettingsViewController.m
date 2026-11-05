@@ -113,7 +113,7 @@
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (section == 0) return 2;
+    if (section == 0) return 3;
     if (section == 1) return 3;
     return 1;
 }
@@ -125,6 +125,7 @@
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
+    if (section == 0) return NSLocalizedString(@"settings.save_photos_footer", nil);
     return nil;
 }
 
@@ -191,6 +192,25 @@
                 _nicknameField.frame = CGRectMake(cellWidth - 190, 0, 148, 44);
                 _randomButton.frame = CGRectMake(cellWidth - 34, 10, 24, 24);
             }
+            return cell;
+        }
+
+        if (indexPath.row == 2) {
+            static NSString *identifier = @"PhotosCell";
+            UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:identifier];
+            if (cell == nil) {
+                cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                               reuseIdentifier:identifier] autorelease];
+                cell.selectionStyle = UITableViewCellSelectionStyleNone;
+                cell.textLabel.text = NSLocalizedString(@"settings.save_photos", nil);
+
+                _photosSwitch = [[UISwitch alloc] init];
+                [_photosSwitch addTarget:self
+                                  action:@selector(savePhotosChanged:)
+                        forControlEvents:UIControlEventValueChanged];
+                cell.accessoryView = _photosSwitch;
+            }
+            _photosSwitch.on = OSSaveToPhotosEnabled();
             return cell;
         }
 
@@ -286,6 +306,11 @@ forRowAtIndexPath:(NSIndexPath *)indexPath {
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
+- (void)savePhotosChanged:(UISwitch *)sender {
+    [[NSUserDefaults standardUserDefaults] setBool:sender.on forKey:@"save_to_photos"];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
 - (BOOL)textFieldShouldReturn:(UITextField *)textField {
     [textField resignFirstResponder];
     [self applyNickname];
@@ -312,6 +337,7 @@ forRowAtIndexPath:(NSIndexPath *)indexPath {
     [_nicknameField release];
     [_randomButton release];
     [_quickSaveSwitch release];
+    [_photosSwitch release];
     [super dealloc];
 }
 

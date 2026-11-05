@@ -18,4 +18,7 @@
     UIActionSheet *_typeSheet;
 }
 
+/* Items shared from other apps (see OSShareInbox), added to what is ready to send. */
+- (void)addSharedItems:(NSArray *)items;
+
 @end
