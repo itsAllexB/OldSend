@@ -26,18 +26,21 @@ def glyph_mask(name, px):
 
 
 def bar_item(scale):
-    # 20 x 20 pt: a round dot over a stem with rounded ends, 4 pt wide like the "+".
+    # 13 x 20 pt: a round dot over a stem with rounded ends, 4 pt wide like the "+". iOS sizes
+    # an image bar button from the image plus fixed padding (it ignores `width`), and 13 pt
+    # makes it as wide as the system + button.
     px = 20 * scale
-    big = Image.new('L', (px * SS, px * SS), 0)
+    wide = 13 * scale
+    big = Image.new('L', (wide * SS, px * SS), 0)
     d = ImageDraw.Draw(big)
     u = scale * SS            # one point
     width = 4.0 * u
-    cx = px * SS / 2.0
+    cx = wide * SS / 2.0
     d.ellipse([cx - 2.3 * u, 1.5 * u, cx + 2.3 * u, 6.1 * u], fill=255)           # dot
     d.rounded_rectangle([cx - width / 2, 8.0 * u, cx + width / 2, 18.5 * u],      # stem
                         radius=width / 2, fill=255)
-    out = Image.new('RGBA', (px, px), (255, 255, 255, 0))
-    out.putalpha(big.resize((px, px), Image.LANCZOS))
+    out = Image.new('RGBA', (wide, px), (255, 255, 255, 0))
+    out.putalpha(big.resize((wide, px), Image.LANCZOS))
     return out
 
 
