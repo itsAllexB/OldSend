@@ -1,6 +1,6 @@
 Package: com.lihaoyun6.oldsend
 Name: OldSend
-Version: 1.0.1-ab4
+Version: 1.0.1-ab5
 Architecture: iphoneos-arm
 Description: LocalSend-compatible file transfer for old iPhones. itsAllexB's build for iOS 6+ (armv7): sends to LocalSend on desktop again, live transfer screen, OldSend in the share sheet of every app, Retina artwork.
 Maintainer: itsAllexB

@@ -95,11 +95,23 @@ static NSString *os_query_value(NSURL *url, NSString *key) {
     NSString *folder = nil;
     NSArray *manifest;
 
-    /* Only folders written by the add-on: inside the mobile user's data, named OldSendShare-*. */
+    /* Only folders written by the add-on: named OldSendShare-*, in an app's temporary directory,
+       which is inside the mobile user's data for App Store apps and /tmp for system apps like
+       Safari. */
     directory = [directory stringByStandardizingPath];
-    if (!([directory hasPrefix:@"/var/mobile/"] || [directory hasPrefix:@"/private/var/mobile/"]) ||
+    if ([directory rangeOfString:@"/../"].location != NSNotFound ||
         ![[directory lastPathComponent] hasPrefix:@"OldSendShare-"]) {
         return items;
+    }
+    {
+        static NSString * const allowed[] = { @"/var/mobile/", @"/private/var/mobile/", @"/tmp/",
+                                               @"/private/tmp/", @"/var/tmp/", @"/private/var/tmp/" };
+        BOOL inside = NO;
+        unsigned i;
+        for (i = 0; i < sizeof allowed / sizeof allowed[0]; i++) {
+            if ([directory hasPrefix:allowed[i]]) inside = YES;
+        }
+        if (!inside) return items;
     }
     manifest = [NSArray arrayWithContentsOfFile:[directory stringByAppendingPathComponent:@"manifest.plist"]];
 
