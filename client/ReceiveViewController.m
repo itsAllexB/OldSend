@@ -155,14 +155,12 @@
                                                  name:OSServerDidReceiveTextNotification
                                                object:nil];
     {
-        /* Our own info icon: iOS 6's draws an italic serif "i". */
-        UIButton *info = [UIButton buttonWithType:UIButtonTypeCustom];
-        UIBarButtonItem *item;
-        [info setImage:[UIImage imageNamed:@"InfoButtonLight.png"] forState:UIControlStateNormal];
-        info.showsTouchWhenHighlighted = YES;
-        [info addTarget:self action:@selector(infoTapped:) forControlEvents:UIControlEventTouchUpInside];
-        info.frame = CGRectMake(0, 0, 40, 30);
-        item = [[UIBarButtonItem alloc] initWithCustomView:info];
+        /* A bordered button like the Send page's refresh and + buttons, with an upright "i"
+           (iOS 6's own info button draws an italic serif one). */
+        UIBarButtonItem *item = [[UIBarButtonItem alloc] initWithImage:[UIImage imageNamed:@"InfoBarItem.png"]
+                                                                 style:UIBarButtonItemStyleBordered
+                                                                target:self
+                                                                action:@selector(infoTapped:)];
         self.navigationItem.rightBarButtonItem = item;
         [item release];
     }

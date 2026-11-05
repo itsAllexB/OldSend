@@ -1,14 +1,15 @@
 # make_info_icons.py <MaterialIcons-Regular.ttf> <MaterialIcons-Regular.codepoints> <client dir>
 #
-# OldSend's own info buttons, replacing iOS 6's (whose "i" is an italic serif): Material Icons'
-# upright "i" in a circle, 22 pt (1x and @2x).
-#   InfoButtonLight: white outline circle with a slight shadow, for the navigation bar.
-#   InfoButtonDark:  filled grey circle, for device rows.
+# OldSend's own info buttons, replacing iOS 6's (whose "i" is an italic serif), 1x and @2x:
+#   InfoButtonDark: Material Icons' filled circle with an upright "i", 22 pt, for device rows.
+#   InfoBarItem:    a bold upright "i" for a bordered navigation-bar button (Receive page), in
+#                   the weight of the system "+" next to it on the Send page; iOS draws bar-item
+#                   images as white masks with its own emboss, so only the shape matters.
 # Material Icons: Apache-2.0, https://github.com/google/material-design-icons
 import os
 import sys
 
-from PIL import Image, ImageChops, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont
 
 FONT, CODES_PATH, OUT = sys.argv[1:4]
 CODES = dict(l.split() for l in open(CODES_PATH))
@@ -24,13 +25,19 @@ def glyph_mask(name, px):
     return big.resize((px, px), Image.LANCZOS)
 
 
-def light(px, scale):
-    mask = glyph_mask('info_outline', px)
-    # iOS 6 bar-button icons: white, with a dark shadow one point above.
-    shadow = ImageChops.offset(mask, 0, -scale).point(lambda a: a * 0.45)
-    out = Image.new('RGBA', (px, px), (0, 0, 0, 0))
-    out.paste((20, 40, 70, 255), (0, 0), shadow)
-    out.paste((255, 255, 255, 255), (0, 0), mask)
+def bar_item(scale):
+    # 20 x 20 pt: a round dot over a stem with rounded ends, 4 pt wide like the "+".
+    px = 20 * scale
+    big = Image.new('L', (px * SS, px * SS), 0)
+    d = ImageDraw.Draw(big)
+    u = scale * SS            # one point
+    width = 4.0 * u
+    cx = px * SS / 2.0
+    d.ellipse([cx - 2.3 * u, 1.5 * u, cx + 2.3 * u, 6.1 * u], fill=255)           # dot
+    d.rounded_rectangle([cx - width / 2, 8.0 * u, cx + width / 2, 18.5 * u],      # stem
+                        radius=width / 2, fill=255)
+    out = Image.new('RGBA', (px, px), (255, 255, 255, 0))
+    out.putalpha(big.resize((px, px), Image.LANCZOS))
     return out
 
 
@@ -43,6 +50,6 @@ def dark(px, scale):
 
 for scale, suffix in ((1, ''), (2, '@2x')):
     px = POINTS * scale
-    light(px, scale).save(os.path.join(OUT, 'InfoButtonLight%s.png' % suffix))
+    bar_item(scale).save(os.path.join(OUT, 'InfoBarItem%s.png' % suffix))
     dark(px, scale).save(os.path.join(OUT, 'InfoButtonDark%s.png' % suffix))
 print('ok')
