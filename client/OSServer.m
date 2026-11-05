@@ -38,7 +38,7 @@
 #define OS_PORT 53317
 #define OS_PROTOCOL_VERSION "2.2"
 #define OS_RECEIVED_DIR "/var/mobile/Library/OldSend/Received"
-#define OS_MAX_FILES 32
+#define OS_MAX_FILES 1000  /* per session; LocalSend skips files that get no token */
 #define OS_MAX_JSON (8 * 1024 * 1024)
 
 NSString * const OSServerDidUpdateNotification = @"OSServerDidUpdateNotification";
@@ -88,10 +88,39 @@ static OSSession gSession;
 static char gLastSessionId[40];
 static volatile BOOL gCancelSend = NO;
 static volatile BOOL gCancelReceive = NO;
+/* The connection the server thread is answering, so a prompt can notice the sender leaving. */
+static volatile int gClientFD = -1;
 static volatile int gSendFD = -1;
 
+/* Peers' JSON strings are not checked for valid UTF-8; stringWithUTF8String: returns nil for
+   invalid bytes, and a nil in an array or format crashes, so convert through this. */
+static NSString *os_nsstring(const char *text) {
+    NSString *string = text != NULL ? [NSString stringWithUTF8String:text] : nil;
+    return string != nil ? string : @"?";
+}
+
+/* YES if the sender we are answering has closed its connection (or sent anything more, which
+   after a complete request can only be TLS's close_notify): it gave up waiting for the prompt. */
+BOOL OSSenderGaveUp(void) {
+    int fd = gClientFD;
+    fd_set readable;
+    struct timeval now = { 0, 0 };
+
+    if (fd < 0) return NO;
+    FD_ZERO(&readable);
+    FD_SET(fd, &readable);
+    return select(fd + 1, &readable, NULL, NULL, &now) > 0;
+}
+
 static void os_file_log(NSString *line) {
-    FILE *file = fopen("/var/mobile/oldsend.log", "a");
+    FILE *file;
+    struct stat info;
+
+    /* Keep the log from growing forever: start over (keeping one old copy) past 1 MB. */
+    if (stat("/var/mobile/oldsend.log", &info) == 0 && info.st_size > 1024 * 1024) {
+        rename("/var/mobile/oldsend.log", "/var/mobile/oldsend.old.log");
+    }
+    file = fopen("/var/mobile/oldsend.log", "a");
     if (file == NULL) return;
     fprintf(file, "%s%s\n", OSIsHeadless() ? "[background] " : "", [line UTF8String]);
     fflush(file);
@@ -458,11 +487,15 @@ static int os_read_chunked_alloc(mbedtls_ssl_context *ssl, unsigned char **out, 
             break;
         }
 
-        if (length + chunkSize + 1 > OS_MAX_JSON) goto fail;
+        /* Compared without adding first: on armv7 size_t is 32 bits, and a chunk size near
+           0xFFFFFFFF would wrap the sum and pass the check. */
+        if (chunkSize > OS_MAX_JSON || length > OS_MAX_JSON - chunkSize - 1) goto fail;
         if (length + chunkSize + 1 > capacity) {
+            unsigned char *grown;
             while (capacity < length + chunkSize + 1) capacity *= 2;
-            buffer = (unsigned char *)realloc(buffer, capacity);
-            if (buffer == NULL) return -1;
+            grown = (unsigned char *)realloc(buffer, capacity);
+            if (grown == NULL) goto fail;
+            buffer = grown;
         }
         if (os_ssl_read_exact(ssl, buffer + length, chunkSize) != 0) goto fail;
         length += chunkSize;
@@ -599,14 +632,40 @@ static void os_sanitize_filename(const char *input, char *output, size_t capacit
     slash = strrchr(name, '\\');
     if (slash != NULL) name = slash + 1;
 
-    while (*name && out + 1 < capacity) {
-        unsigned char c = (unsigned char)*name++;
-        if (c < 0x20 || c == 0x7f) continue;
-        output[out++] = (char)c;
+    while (*name == '.') name++;  /* a leading dot would hide the file in History */
+
+    {
+        /* Too long: cut the stem on a UTF-8 character boundary and keep the extension. */
+        const char *dot = strrchr(name, '.');
+        size_t extension = (dot != NULL && strlen(dot) <= 16) ? strlen(dot) : 0;
+        size_t limit = capacity - 1;
+        size_t stem = strlen(name) - extension;
+
+        if (strlen(name) > limit) {
+            stem = limit > extension ? limit - extension : 0;
+            while (stem > 0 && ((unsigned char)name[stem] & 0xC0) == 0x80) stem--;
+        }
+        {
+            size_t consumed = 0;
+            while (consumed < stem && name[consumed]) {
+                unsigned char c = (unsigned char)name[consumed++];
+                if (c < 0x20 || c == 0x7f) continue;
+                output[out++] = (char)c;
+            }
+        }
+        if (extension > 0 && out + extension < capacity) {
+            const char *ext = dot;
+            while (*ext && out + 1 < capacity) {
+                unsigned char c = (unsigned char)*ext++;
+                if (c < 0x20 || c == 0x7f) continue;
+                output[out++] = (char)c;
+            }
+        }
     }
     output[out] = '\0';
 
-    if (out == 0 || strcmp(output, ".") == 0 || strcmp(output, "..") == 0) {
+    if (out == 0 || strcmp(output, ".") == 0 || strcmp(output, "..") == 0 ||
+        [NSString stringWithUTF8String:output] == nil) {
         snprintf(output, capacity, "file");
     }
 }
@@ -689,11 +748,8 @@ static int os_register_peer(OSIdentity *identity, mbedtls_ssl_config *config,
     char header[512];
     char response[512];
 
-    if (gCancelSend) return -10;
-
     fd = os_tcp_connect(ip, port, 5000);
     if (fd < 0) return -1;
-    gSendFD = fd;
 
     mbedtls_ssl_init(&ssl);
     ret = mbedtls_ssl_setup(&ssl, config);
@@ -810,6 +866,7 @@ static int os_client_request(OSIdentity *identity, mbedtls_ssl_config *config,
 
     fd = os_tcp_connect(ip, port, 5000);
     if (fd < 0) return -1;
+    gSendFD = fd;  /* Cancel shuts this socket down to interrupt a wait */
 
     mbedtls_ssl_init(&ssl);
     ret = mbedtls_ssl_setup(&ssl, config);
@@ -900,6 +957,14 @@ static int os_client_request(OSIdentity *identity, mbedtls_ssl_config *config,
         mbedtls_ssl_free(&ssl);
         close(fd);
         return -10;
+    }
+
+    if (strstr(path, "/prepare-upload") != NULL) {
+        /* LocalSend answers only once its user taps Accept (unless Quick Save is on). */
+        struct timeval wait;
+        wait.tv_sec = 300;
+        wait.tv_usec = 0;
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &wait, sizeof wait);
     }
 
     if (os_read_line(&ssl, line, sizeof line) < 0 ||
@@ -1987,16 +2052,16 @@ static void os_apply_transfer_event(OSTransfer *transfer, NSArray *event) {
 
                     if (!recentlySeen) {
                         NSString *alias = cJSON_IsString(aliasItem) && aliasItem->valuestring != NULL
-                                        ? [NSString stringWithUTF8String:aliasItem->valuestring]
+                                        ? os_nsstring(aliasItem->valuestring)
                                         : NSLocalizedString(@"device.unknown", nil);
                         NSString *model = cJSON_IsString(modelItem) && modelItem->valuestring != NULL
-                                        ? [NSString stringWithUTF8String:modelItem->valuestring]
+                                        ? os_nsstring(modelItem->valuestring)
                                         : @"";
                         NSString *version = cJSON_IsString(versionItem) && versionItem->valuestring != NULL
-                                          ? [NSString stringWithUTF8String:versionItem->valuestring]
+                                          ? os_nsstring(versionItem->valuestring)
                                           : @"";
                         NSString *deviceType = cJSON_IsString(typeItem) && typeItem->valuestring != NULL
-                                             ? [NSString stringWithUTF8String:typeItem->valuestring]
+                                             ? os_nsstring(typeItem->valuestring)
                                              : @"";
                         NSString *body = [NSString stringWithFormat:
                             @"{\"alias\":\"%@\",\"version\":\"%s\",\"deviceModel\":\"%@\",\"deviceType\":\"mobile\",\"fingerprint\":\"%@\",\"port\":%d,\"protocol\":\"https\",\"download\":false}",
@@ -2101,6 +2166,17 @@ static void os_apply_transfer_event(OSTransfer *transfer, NSArray *event) {
                              toTarget:self
                            withObject:nil];
     [self retryPendingPhotos];
+    {
+        NSString *temp = [@OS_RECEIVED_DIR stringByAppendingPathComponent:@".tmp"];
+        for (NSString *name in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:temp error:NULL]) {
+            NSString *path = [temp stringByAppendingPathComponent:name];
+            NSDate *modified = [[[NSFileManager defaultManager] attributesOfItemAtPath:path error:NULL]
+                                objectForKey:NSFileModificationDate];
+            if (modified != nil && [modified timeIntervalSinceNow] < -3600) {
+                [[NSFileManager defaultManager] removeItemAtPath:path error:NULL];
+            }
+        }
+    }
 
     [self announceNow];
     /* The background service announces once a minute: peers that scan get an answer anyway. */
@@ -2370,7 +2446,9 @@ static int os_open_discovery_socket(OSServer *server, BOOL log) {
             mbedtls_ssl_get_ciphersuite(&ssl),
             peer);
 
+    gClientFD = clientFD;
     [self handleHTTP:&ssl peer:peer];
+    gClientFD = -1;
 
     mbedtls_ssl_close_notify(&ssl);
     mbedtls_ssl_free(&ssl);
@@ -2422,25 +2500,25 @@ static int os_open_discovery_socket(OSServer *server, BOOL log) {
         if (cJSON_IsString(fingerprintItem) && fingerprintItem->valuestring != NULL &&
             strcasecmp(fingerprintItem->valuestring, [_fingerprint UTF8String]) != 0) {
             NSString *alias = cJSON_IsString(aliasItem) && aliasItem->valuestring != NULL
-                            ? [NSString stringWithUTF8String:aliasItem->valuestring]
+                            ? os_nsstring(aliasItem->valuestring)
                             : NSLocalizedString(@"device.unknown", nil);
             NSString *model = cJSON_IsString(modelItem) && modelItem->valuestring != NULL
-                            ? [NSString stringWithUTF8String:modelItem->valuestring]
+                            ? os_nsstring(modelItem->valuestring)
                             : @"";
             NSString *protocol = cJSON_IsString(protocolItem) && protocolItem->valuestring != NULL
-                               ? [NSString stringWithUTF8String:protocolItem->valuestring]
+                               ? os_nsstring(protocolItem->valuestring)
                                : @"https";
             NSString *version = cJSON_IsString(versionItem) && versionItem->valuestring != NULL
-                              ? [NSString stringWithUTF8String:versionItem->valuestring]
+                              ? os_nsstring(versionItem->valuestring)
                               : @"";
             NSString *deviceType = cJSON_IsString(typeItem) && typeItem->valuestring != NULL
-                                 ? [NSString stringWithUTF8String:typeItem->valuestring]
+                                 ? os_nsstring(typeItem->valuestring)
                                  : @"";
             NSDictionary *info = [NSDictionary dictionaryWithObjectsAndKeys:
                 alias, @"alias",
                 [NSString stringWithUTF8String:ip], @"ip",
                 [NSNumber numberWithInt:(cJSON_IsNumber(portItem) ? (int)portItem->valuedouble : OS_PORT)], @"port",
-                [NSString stringWithUTF8String:fingerprintItem->valuestring], @"fingerprint",
+                os_nsstring(fingerprintItem->valuestring), @"fingerprint",
                 model, @"model",
                 protocol, @"protocol",
                 version, @"version",
@@ -2591,7 +2669,7 @@ static int os_open_discovery_socket(OSServer *server, BOOL log) {
 
         size = [[[manager attributesOfItemAtPath:path error:NULL]
                  objectForKey:NSFileSize] longLongValue];
-        if (size <= 0) {
+        if (size < 0) {
             errorMessage = NSLocalizedString(@"send.failed_message", nil);
             goto cleanup;
         }
@@ -2607,7 +2685,7 @@ static int os_open_discovery_socket(OSServer *server, BOOL log) {
         totalBytes += size;
     }
 
-    if ([files count] == 0 || totalBytes <= 0) {
+    if ([files count] == 0 || totalBytes < 0) {
         errorMessage = NSLocalizedString(@"send.failed_message", nil);
         goto cleanup;
     }
@@ -2747,7 +2825,7 @@ static int os_open_discovery_socket(OSServer *server, BOOL log) {
                                             waitUntilDone:NO];
                         totalBytes -= [[file objectForKey:@"size"] longLongValue];
                     } else {
-                        [tokens setObject:[NSString stringWithUTF8String:tokenItem->valuestring]
+                        [tokens setObject:os_nsstring(tokenItem->valuestring)
                                    forKey:fileId];
                     }
                     index++;
@@ -2759,7 +2837,7 @@ static int os_open_discovery_socket(OSServer *server, BOOL log) {
                 goto cleanup;
             }
 
-            sessionIdString = [[NSString stringWithUTF8String:sessionItem->valuestring] copy];
+            sessionIdString = [os_nsstring(sessionItem->valuestring) copy];
             progressContext.total = totalBytes;
 
             if (gCancelSend) {
@@ -2837,6 +2915,8 @@ cleanup:
         gSendFD = -1;
     }
     [sessionIdString release];
+    gCancelSend = NO;
+    gSendFD = -1;
     for (NSString *temporaryPath in tempPaths) {
         [[NSFileManager defaultManager] removeItemAtPath:temporaryPath error:NULL];
     }
@@ -2935,7 +3015,11 @@ cleanup:
     {
         NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:60];
         while (!_decisionMade && [deadline timeIntervalSinceNow] > 0) {
-            [_decisionCondition waitUntilDate:deadline];
+            [_decisionCondition waitUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.5]];
+            if (OSSenderGaveUp()) {
+                os_logf(self, @"The sender gave up while the prompt was open");
+                break;
+            }
         }
         accepted = _decisionMade && _decisionAccepted;
         if (!_decisionMade) {
@@ -2956,7 +3040,7 @@ cleanup:
     cJSON *aliasItem;
     cJSON *responseRoot;
     cJSON *responseFiles;
-    OSSession session;
+    OSSession *session = NULL;
     OSIdentity *identity = (OSIdentity *)_identity;
     NSMutableString *summary;
     NSString *sender;
@@ -2984,8 +3068,12 @@ cleanup:
         return 409;
     }
 
-    memset(&session, 0, sizeof session);
-    for (child = files->child; child != NULL && session.count < OS_MAX_FILES; child = child->next) {
+    session = (OSSession *)calloc(1, sizeof *session);
+    if (session == NULL) {
+        cJSON_Delete(root);
+        return 500;
+    }
+    for (child = files->child; child != NULL && session->count < OS_MAX_FILES; child = child->next) {
         cJSON *nameItem;
         cJSON *sizeItem;
         cJSON *shaItem;
@@ -2997,7 +3085,7 @@ cleanup:
         nameItem = cJSON_GetObjectItem(child, "fileName");
         if (!cJSON_IsString(nameItem) || nameItem->valuestring == NULL) continue;
 
-        entry = &session.files[session.count];
+        entry = &session->files[session->count];
         snprintf(entry->id, sizeof entry->id, "%s", child->string);
         os_sanitize_filename(nameItem->valuestring, entry->name, sizeof entry->name);
 
@@ -3035,18 +3123,19 @@ cleanup:
         } else {
             other++;
         }
-        session.count++;
+        session->count++;
     }
 
-    if (session.count == 0) {
+    if (session->count == 0) {
         cJSON_Delete(root);
+        free(session);
         return 204;
     }
 
     infoItem = cJSON_GetObjectItem(root, "info");
     aliasItem = infoItem != NULL ? cJSON_GetObjectItem(infoItem, "alias") : NULL;
     sender = cJSON_IsString(aliasItem) && aliasItem->valuestring != NULL
-           ? [NSString stringWithUTF8String:aliasItem->valuestring]
+           ? os_nsstring(aliasItem->valuestring)
            : NSLocalizedString(@"device.unknown", nil);
 
     if (textOnly) {
@@ -3056,14 +3145,14 @@ cleanup:
     } else {
         title = NSLocalizedString(@"receive.file_title", nil);
 
-        if (session.count <= 3) {
+        if (session->count <= 3) {
             summary = [NSMutableString string];
-            for (i = 0; i < session.count; i++) {
+            for (i = 0; i < session->count; i++) {
                 if (i > 0) [summary appendString:@"\n"];
-                [summary appendString:[NSString stringWithUTF8String:session.files[i].name]];
+                [summary appendString:os_nsstring(session->files[i].name)];
             }
             message = [NSString stringWithFormat:NSLocalizedString(@"receive.file_message", nil),
-                       sender, session.count, summary];
+                       sender, session->count, summary];
         } else {
             NSMutableArray *parts = [NSMutableArray array];
             NSString *typeSummary;
@@ -3091,18 +3180,18 @@ cleanup:
             typeSummary = [parts componentsJoinedByString:
                            NSLocalizedString(@"common.list_separator", nil)];
 
-            if (images == session.count) {
+            if (images == session->count) {
                 message = [NSString stringWithFormat:
                            NSLocalizedString(@"receive.many_images", nil),
-                           sender, session.count];
-            } else if (videos == session.count) {
+                           sender, session->count];
+            } else if (videos == session->count) {
                 message = [NSString stringWithFormat:
                            NSLocalizedString(@"receive.many_videos", nil),
-                           sender, session.count];
+                           sender, session->count];
             } else {
                 message = [NSString stringWithFormat:
                            NSLocalizedString(@"receive.file_message_many", nil),
-                           sender, session.count, typeSummary];
+                           sender, session->count, typeSummary];
             }
         }
     }
@@ -3122,7 +3211,7 @@ cleanup:
             /* Background service: a notification; tapping it opens the app with the prompt. */
             NSString *body = textOnly
                 ? [NSString stringWithFormat:NSLocalizedString(@"daemon.request_text", nil), sender]
-                : [NSString stringWithFormat:NSLocalizedString(@"daemon.request_files", nil), sender, session.count];
+                : [NSString stringWithFormat:NSLocalizedString(@"daemon.request_files", nil), sender, session->count];
             accepted = OSDaemonAsk(title, message, body);
         } else {
             accepted = [self askToAcceptWithTitle:title message:message];
@@ -3142,6 +3231,7 @@ cleanup:
                                withObject:nil
                             waitUntilDone:NO];
         os_logf(self, @"Receiver declined the session from %@", sender);
+        free(session);
         return 403;
     }
 
@@ -3154,17 +3244,17 @@ cleanup:
         NSMutableArray *transferFiles = [NSMutableArray array];
         cJSON *typeItem = infoItem != NULL ? cJSON_GetObjectItem(infoItem, "deviceType") : NULL;
         NSString *deviceType = cJSON_IsString(typeItem) && typeItem->valuestring != NULL
-                             ? [NSString stringWithUTF8String:typeItem->valuestring] : @"";
+                             ? os_nsstring(typeItem->valuestring) : @"";
 
-        for (i = 0; i < session.count; i++) {
-            OSFileEntry *entry = &session.files[i];
+        for (i = 0; i < session->count; i++) {
+            OSFileEntry *entry = &session->files[i];
             if (entry->isMessage) {
                 entry->transferIndex = -1;
                 continue;
             }
             entry->transferIndex = (int)[transferFiles count];
             [transferFiles addObject:[NSDictionary dictionaryWithObjectsAndKeys:
-                                      [NSString stringWithUTF8String:entry->name], @"name",
+                                      os_nsstring(entry->name), @"name",
                                       [NSNumber numberWithLongLong:entry->size], @"size", nil]];
         }
         if ([transferFiles count] > 0) {
@@ -3179,9 +3269,9 @@ cleanup:
     }
     {
         long long totalBytes = 0;
-        for (i = 0; i < session.count; i++) {
-            if (session.files[i].size > 0) {
-                totalBytes += session.files[i].size;
+        for (i = 0; i < session->count; i++) {
+            if (session->files[i].size > 0) {
+                totalBytes += session->files[i].size;
             }
         }
         [self performSelectorOnMainThread:@selector(beginSessionProgressWithTotal:)
@@ -3191,20 +3281,20 @@ cleanup:
     [self performSelectorOnMainThread:@selector(setReceiveStatusText:)
                            withObject:NSLocalizedString(@"status.accepted", nil)
                         waitUntilDone:NO];
-    os_random_hex(identity, session.sessionId, 16);
-    snprintf(gLastSessionId, sizeof gLastSessionId, "%s", session.sessionId);
-    session.active = 1;
-    session.remaining = session.count;
+    os_random_hex(identity, session->sessionId, 16);
+    snprintf(gLastSessionId, sizeof gLastSessionId, "%s", session->sessionId);
+    session->active = 1;
+    session->remaining = session->count;
 
     responseRoot = cJSON_CreateObject();
-    cJSON_AddStringToObject(responseRoot, "sessionId", session.sessionId);
+    cJSON_AddStringToObject(responseRoot, "sessionId", session->sessionId);
     responseFiles = cJSON_AddObjectToObject(responseRoot, "files");
-    for (i = 0; i < session.count; i++) {
-        os_random_hex(identity, session.files[i].token, 16);
-        cJSON_AddStringToObject(responseFiles, session.files[i].id, session.files[i].token);
+    for (i = 0; i < session->count; i++) {
+        os_random_hex(identity, session->files[i].token, 16);
+        cJSON_AddStringToObject(responseFiles, session->files[i].id, session->files[i].token);
     }
 
-    gSession = session;
+    gSession = *session;
 
     {
         char *printed = cJSON_PrintUnformatted(responseRoot);
@@ -3216,10 +3306,11 @@ cleanup:
     cJSON_Delete(responseRoot);
     cJSON_Delete(root);
 
-    os_logf(self, @"Preparing to receive %d file(s)", session.count);
-    for (i = 0; i < session.count; i++) {
-        os_logf(self, @"  %s (%lld bytes)", session.files[i].name, session.files[i].size);
+    os_logf(self, @"Preparing to receive %d file(s)", session->count);
+    for (i = 0; i < session->count; i++) {
+        os_logf(self, @"  %s (%lld bytes)", session->files[i].name, session->files[i].size);
     }
+    free(session);
     return 200;
 }
 
@@ -3288,7 +3379,7 @@ cleanup:
         progress.lastReported = 0;
         progress.transferIndex = entry->transferIndex;
         [self performSelectorOnMainThread:@selector(beginReceivingFile:)
-                               withObject:[NSString stringWithUTF8String:entry->name]
+                               withObject:os_nsstring(entry->name)
                             waitUntilDone:NO];
         [self performSelectorOnMainThread:@selector(receiveTransferEvent:)
                                withObject:[NSArray arrayWithObjects:@"start",
@@ -3371,7 +3462,7 @@ cleanup:
             gSession.remaining--;
             os_logf(self, @"Received text message %s (%lld bytes)", entry->name, written);
         } else {
-            finalPath = os_unique_path(directory, [NSString stringWithUTF8String:entry->name]);
+            finalPath = os_unique_path(directory, os_nsstring(entry->name));
             if (![[NSFileManager defaultManager] moveItemAtPath:tempPath
                                                          toPath:finalPath
                                                           error:NULL]) {
@@ -3394,7 +3485,7 @@ cleanup:
                     entry->name, written, [finalPath lastPathComponent]);
         }
     } else {
-        finalPath = os_unique_path(directory, [NSString stringWithUTF8String:entry->name]);
+        finalPath = os_unique_path(directory, os_nsstring(entry->name));
         if (![[NSFileManager defaultManager] moveItemAtPath:tempPath
                                                      toPath:finalPath
                                                       error:NULL]) {
@@ -3589,6 +3680,11 @@ cleanup:
             [extension isEqualToString:@"mp4"] ||
             [extension isEqualToString:@"mov"] ||
             [extension isEqualToString:@"m4v"]) {
+            BOOL queued = [path isEqualToString:_photoActivePath] && _photoQueueRunning;
+            for (NSArray *existing in _photoQueue) {
+                if ([[existing objectAtIndex:0] isEqualToString:path]) queued = YES;
+            }
+            if (queued) continue;
             [_photoQueue addObject:info];
             added = YES;
         }
@@ -3735,6 +3831,7 @@ cleanup:
     NSString *directory = @OS_RECEIVED_DIR;
     NSString *markerDirectory = [directory stringByAppendingPathComponent:@".saved"];
     NSArray *names;
+    NSMutableArray *pending = [NSMutableArray array];
 
     if (!OSSaveToPhotosEnabled()) {
         _retryingPhotos = NO;
@@ -3768,11 +3865,11 @@ cleanup:
         marker = [markerDirectory stringByAppendingPathComponent:name];
         if ([manager fileExistsAtPath:marker]) continue;
 
-        os_logf(self, @"Retrying photo save: %@", name);
-        if ([self saveToPhotos:path type:@"" timeout:20]) {
-            [self writeSavedMarkerForPath:path];
-        }
+        os_logf(self, @"Saving to Photos: %@", name);
+        [pending addObject:[NSArray arrayWithObjects:path, @"", nil]];
     }
+    /* One queue for all photo saves (the main thread's); the queue writes the .saved markers. */
+    if ([pending count] > 0) [self enqueuePhotoBatch:pending];
     _retryingPhotos = NO;
     [pool release];
 }
@@ -3863,9 +3960,9 @@ cleanup:
             response = [self registerJSON];
         } else if (strncmp(request.path, "/api/localsend/v2/info", 22) == 0) {
             response = [self registerJSON];
-        } else if (strncmp(request.path, "/api/localsend/v2/prepare-upload", 33) == 0) {
+        } else if (strncmp(request.path, "/api/localsend/v2/prepare-upload", 32) == 0) {
             status = [self handlePrepare:body length:bodyLength response:&response];
-        } else if (strncmp(request.path, "/api/localsend/v2/cancel", 25) == 0) {
+        } else if (strncmp(request.path, "/api/localsend/v2/cancel", 24) == 0) {
             status = [self handleCancel:request.path];
         } else {
             status = 404;

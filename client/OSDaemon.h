@@ -55,6 +55,7 @@ void OSDaemonHoldAwake(BOOL hold);
 - (void)appDidBecomeActive;
 - (void)appDidEnterBackground;
 - (void)appWillTerminate;
+- (void)backgroundTimeExpired;
 - (void)settingsChanged;
 - (void)cancelRemoteTransfer;
 @end

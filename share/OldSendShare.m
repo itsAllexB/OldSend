@@ -98,6 +98,10 @@ static BOOL os_is_supported(id item) {
 
 - (void)addFileAtPath:(NSString *)path {
     NSString *name = [path lastPathComponent];
+    BOOL directory = NO;
+
+    /* Folders (and packages such as .rtfd) can't be sent as one file. */
+    if (![[NSFileManager defaultManager] fileExistsAtPath:path isDirectory:&directory] || directory) return;
     NSString *file = [NSString stringWithFormat:@"%u-%@", (unsigned)[_manifest count], name];
     if ([[NSFileManager defaultManager] copyItemAtPath:path
                                                 toPath:[_folder stringByAppendingPathComponent:file]

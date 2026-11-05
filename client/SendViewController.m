@@ -589,6 +589,17 @@
 }
 
 - (void)clearPending {
+    /* Copies made for sending (photos, picked videos, shared files) are no longer needed. */
+    for (NSDictionary *item in _pendingItems) {
+        NSString *path = [item objectForKey:@"path"];
+        if ([path hasPrefix:@"/var/mobile/Library/OldSend/Outgoing/"]) {
+            NSString *parent = [path stringByDeletingLastPathComponent];
+            [[NSFileManager defaultManager] removeItemAtPath:path error:NULL];
+            if ([[parent lastPathComponent] hasPrefix:@"shared-"]) {
+                [[NSFileManager defaultManager] removeItemAtPath:parent error:NULL];
+            }
+        }
+    }
     [_pendingItems removeAllObjects];
 }
 

@@ -10,6 +10,8 @@ extern NSString * const OSServerDidReceiveTextNotification;
 
 /* Settings > Save to Photos: copy received photos and videos into the Photos app (default on). */
 BOOL OSSaveToPhotosEnabled(void);
+/* For prompts: the sender closed the connection we are answering. */
+BOOL OSSenderGaveUp(void);
 
 @interface OSServer : NSObject {
 @private

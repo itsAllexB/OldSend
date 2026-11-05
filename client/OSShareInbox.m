@@ -42,7 +42,10 @@ static NSDictionary *os_file_item(NSString *source, NSString *name, NSString *fo
     NSString *destination;
     NSString *type;
     long long size;
+    BOOL directory = NO;
 
+    /* Folders (and packages such as .rtfd) can't be sent as one file. */
+    if (![manager fileExistsAtPath:source isDirectory:&directory] || directory) return nil;
     name = [name lastPathComponent];
     if ([name length] == 0 || [name hasPrefix:@"."]) name = [source lastPathComponent];
     destination = [folder stringByAppendingPathComponent:name];
@@ -51,7 +54,6 @@ static NSDictionary *os_file_item(NSString *source, NSString *name, NSString *fo
         return nil;
     }
     size = [[[manager attributesOfItemAtPath:destination error:NULL] objectForKey:NSFileSize] longLongValue];
-    if (size <= 0) return nil;
     type = os_mime_type(name);
     return [NSDictionary dictionaryWithObjectsAndKeys:
             ([type hasPrefix:@"image/"] || [type hasPrefix:@"video/"]) ? @"media" : @"file", @"kind",

@@ -179,6 +179,14 @@ static BOOL OSIsWiFiReachable(void) {
 
     [[UIApplication sharedApplication] setIdleTimerDisabled:YES];
     _backgroundTask = UIBackgroundTaskInvalid;
+    /* Nothing is ready to send at launch, so whatever is left in Outgoing is orphaned. Shared
+       items arrive after this (application:openURL:...). */
+    {
+        NSString *outgoing = @"/var/mobile/Library/OldSend/Outgoing";
+        for (NSString *name in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:outgoing error:NULL]) {
+            [[NSFileManager defaultManager] removeItemAtPath:[outgoing stringByAppendingPathComponent:name] error:NULL];
+        }
+    }
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(transferDidStart:)
                                                  name:OSTransferDidStartNotification
@@ -250,6 +258,7 @@ static BOOL OSIsWiFiReachable(void) {
     [self endBackgroundTask];
     _backgroundTask = [application beginBackgroundTaskWithExpirationHandler:^{
         [[OSServer shared] appendLog:@"Background time is up"];
+        [[OSDaemonClient shared] backgroundTimeExpired];
         [self endBackgroundTask];
     }];
     /* With Run in Background on, the background service takes over (once a transfer is done). */

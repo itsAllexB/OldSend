@@ -109,6 +109,10 @@ BOOL OSDaemonAsk(NSString *title, NSString *message, NSString *notificationBody)
         if (answered) accepted = [[decision objectForKey:@"accepted"] boolValue];
         [pool release];
         if (answered) break;
+        if (OSSenderGaveUp()) {
+            [[OSServer shared] appendLog:@"The sender gave up while waiting for an answer"];
+            break;
+        }
         usleep(250000);
     }
     gDecisionWaiting = NO;
@@ -208,6 +212,11 @@ int OSDaemonMain(void) {
         return 0;
     }
 
+    /* A previous run may have died with a request or transfer on file. */
+    [[NSFileManager defaultManager] removeItemAtPath:OS_REQUEST_PATH error:NULL];
+    [[NSFileManager defaultManager] removeItemAtPath:OS_DECISION_PATH error:NULL];
+    [[NSFileManager defaultManager] removeItemAtPath:OS_TRANSFER_PATH error:NULL];
+
     service = [[OSDaemonService alloc] init];
     server = [OSServer shared];
     [server setPaused:OSDaemonAppIsActive()];
@@ -256,8 +265,12 @@ int OSDaemonMain(void) {
 
 - (id)init {
     if ((self = [super init])) {
+        int token;
         notify_register_dispatch(OS_NOTE_CHANGED, &_changedToken, dispatch_get_main_queue(), ^(int t) {
             [self serviceChanged];
+        });
+        notify_register_dispatch("com.apple.system.config.network_change", &token, dispatch_get_main_queue(), ^(int t) {
+            if (![[OSServer shared] isPaused]) [[OSServer shared] resume];
         });
     }
     return self;
@@ -307,6 +320,21 @@ int OSDaemonMain(void) {
 
 - (void)appWillTerminate {
     [self publishActive:NO];
+}
+
+- (void)backgroundTimeExpired {
+    /* iOS is about to suspend the app; a transfer still running here cannot finish. Stop it and
+       hand over now, or the suspended app would keep the service paused. */
+    if (!OSDaemonEnabled()) return;
+    if ([[OSServer shared] hasActiveSession]) {
+        [[OSServer shared] cancelSending];
+        [[OSServer shared] cancelReceiving];
+    }
+    [[OSServer shared] setPaused:YES];
+    [self publishActive:NO];
+    [_pauseTimer invalidate];
+    [_pauseTimer release];
+    _pauseTimer = nil;
 }
 
 - (void)settingsChanged {
