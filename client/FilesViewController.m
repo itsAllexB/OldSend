@@ -4,6 +4,9 @@
 #import "FileTypeIcon.h"
 #import "OSServer.h"
 #import <QuickLook/QuickLook.h>
+#import <MediaPlayer/MediaPlayer.h>
+#import <AVFoundation/AVFoundation.h>
+#import <MobileCoreServices/MobileCoreServices.h>
 #include <math.h>
 
 #define OS_RECEIVED_PATH @"/var/mobile/Library/OldSend/Received"
@@ -82,10 +85,20 @@
 
 @end
 
-/* Tapping a received file opens it in Quick Look, as Mail does with attachments: photos,
-   videos, songs (MP3, AAC, ALAC, WAV, AIFF, CAF play right there), PDFs, Office and iWork
-   documents, text. Its share button offers "Open in…". Files Quick Look can't show (FLAC, ZIP…)
-   get the File Info alert as before. */
+/* Tapping a received file opens it the way iOS 6 opens it elsewhere: songs and videos iOS can
+   play (MP3, AAC, ALAC, WAV, AIFF, CAF, MP4, MOV…) in iOS's own full-screen movie player, with
+   Done, AirPlay and the full-screen toggle working; everything else Quick Look can show (photos,
+   PDFs, Office and iWork documents, text) in Quick Look, as Mail does with attachments, whose
+   share button offers "Open in…". Files neither can show (FLAC, ZIP…) get the File Info alert. */
+static BOOL os_is_playable_media(NSString *path) {
+    CFStringRef type = UTTypeCreatePreferredIdentifierForTag(kUTTagClassFilenameExtension,
+                                                             (CFStringRef)[[path pathExtension] lowercaseString],
+                                                             NULL);
+    BOOL media = (type != NULL && UTTypeConformsTo(type, kUTTypeAudiovisualContent));
+    if (type != NULL) CFRelease(type);
+    if (!media) return NO;
+    return [[AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:path] options:nil] isPlayable];
+}
 @interface FilesViewController () <QLPreviewControllerDataSource>
 @end
 
@@ -466,12 +479,25 @@ didEndEditingRowAtIndexPath:(NSIndexPath *)indexPath {
     {
         NSDictionary *file = [_files objectAtIndex:indexPath.row];
         NSURL *url = [NSURL fileURLWithPath:[file objectForKey:@"path"]];
+        /* Present from the tab bar controller, the app's root, so the player or Quick Look
+           covers the whole screen and returns to History cleanly. */
+        UIViewController *presenter = self.tabBarController != nil ? (UIViewController *)self.tabBarController : self;
+        if (os_is_playable_media([file objectForKey:@"path"])) {
+            MPMoviePlayerViewController *player = [[MPMoviePlayerViewController alloc] initWithContentURL:url];
+            /* Play like Music does: through the silent switch, and over AirPlay. */
+            [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback error:NULL];
+            [[AVAudioSession sharedInstance] setActive:YES error:NULL];
+            player.moviePlayer.allowsAirPlay = YES;
+            [presenter presentMoviePlayerViewControllerAnimated:player];
+            [player release];
+            return;
+        }
         if ([QLPreviewController canPreviewItem:url]) {
             QLPreviewController *preview = [[QLPreviewController alloc] init];
             [_previewURL release];
             _previewURL = [url retain];
             preview.dataSource = self;
-            [self presentModalViewController:preview animated:YES];
+            [presenter presentModalViewController:preview animated:YES];
             [preview release];
             return;
         }
