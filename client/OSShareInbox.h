@@ -11,6 +11,9 @@
 @interface OSShareInbox : NSObject
 
 + (BOOL)canHandleURL:(NSURL *)url;
+/* Removes share folders older than 10 minutes that never reached OldSend (a crash, a restart):
+   in /tmp (system apps) and in App Store apps' tmp folders. */
++ (void)removeAbandonedShares;
 + (NSArray *)itemsForURL:(NSURL *)url;
 
 @end

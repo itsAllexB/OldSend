@@ -12,6 +12,7 @@
     BOOL _wifiBreathing;
     BOOL _wifiActive;
     BOOL _wifiFastAnimation;
+    UIView *_infoOverlay;
 }
 
 @end

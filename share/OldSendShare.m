@@ -179,6 +179,14 @@ static BOOL os_is_supported(id item) {
     NSString *folderName = [NSString stringWithFormat:@"OldSendShare-%u-%u",
                             (unsigned)[[NSDate date] timeIntervalSince1970], (unsigned)arc4random()];
 
+    /* Leftovers from a share that never reached OldSend (a crash, a restart): gone after 10 min. */
+    for (NSString *name in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:NSTemporaryDirectory() error:NULL]) {
+        NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:name];
+        NSDate *created = [[[NSFileManager defaultManager] attributesOfItemAtPath:path error:NULL] objectForKey:NSFileModificationDate];
+        if ([name hasPrefix:@"OldSendShare-"] && created != nil && [created timeIntervalSinceNow] < -600) {
+            [[NSFileManager defaultManager] removeItemAtPath:path error:NULL];
+        }
+    }
     [_folder release];
     _folder = [[NSTemporaryDirectory() stringByAppendingPathComponent:folderName] retain];
     [[NSFileManager defaultManager] createDirectoryAtPath:_folder

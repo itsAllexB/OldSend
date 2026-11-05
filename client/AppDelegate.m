@@ -186,6 +186,7 @@ static BOOL OSIsWiFiReachable(void) {
         for (NSString *name in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:outgoing error:NULL]) {
             [[NSFileManager defaultManager] removeItemAtPath:[outgoing stringByAppendingPathComponent:name] error:NULL];
         }
+        [OSShareInbox removeAbandonedShares];
     }
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(transferDidStart:)

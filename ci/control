@@ -1,4 +1,4 @@
-Package: com.lihaoyun6.oldsend
+Package: com.itsallexb.oldsend
 Name: OldSend
 Version: 2.0
 Architecture: iphoneos-arm
@@ -8,3 +8,5 @@ Author: lihaoyun6
 Section: Utilities
 Priority: optional
 Depends: firmware (>= 6.0), mobilesubstrate
+Conflicts: com.lihaoyun6.oldsend
+Replaces: com.lihaoyun6.oldsend

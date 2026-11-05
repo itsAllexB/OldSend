@@ -5,6 +5,10 @@
 #import "TextViewController.h"
 #import <QuartzCore/QuartzCore.h>
 #include <math.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 @implementation ReceiveViewController
 
@@ -150,6 +154,15 @@
                                              selector:@selector(textReceived:)
                                                  name:OSServerDidReceiveTextNotification
                                                object:nil];
+    {
+        UIButton *info = [UIButton buttonWithType:UIButtonTypeInfoLight];
+        UIBarButtonItem *item;
+        [info addTarget:self action:@selector(infoTapped:) forControlEvents:UIControlEventTouchUpInside];
+        info.frame = CGRectMake(0, 0, 40, 30);
+        item = [[UIBarButtonItem alloc] initWithCustomView:info];
+        self.navigationItem.rightBarButtonItem = item;
+        [item release];
+    }
     [self refresh];
 }
 
@@ -164,6 +177,117 @@
     [super viewWillDisappear:animated];
     _visible = NO;
     [self stopWifiBreathing];
+    [self hideInfo];
+}
+
+#pragma mark Network info card (like LocalSend's)
+
+/* Every IPv4 address of an interface that is up: Wi-Fi, and cellular or personal hotspot. */
+static NSArray *os_ipv4_addresses(void) {
+    NSMutableArray *addresses = [NSMutableArray array];
+    struct ifaddrs *list = NULL;
+    struct ifaddrs *entry;
+
+    if (getifaddrs(&list) != 0) return addresses;
+    for (entry = list; entry != NULL; entry = entry->ifa_next) {
+        char text[INET_ADDRSTRLEN];
+        NSString *address;
+        if (entry->ifa_addr == NULL || entry->ifa_addr->sa_family != AF_INET) continue;
+        if ((entry->ifa_flags & IFF_UP) == 0 || (entry->ifa_flags & IFF_LOOPBACK) != 0) continue;
+        if (inet_ntop(AF_INET, &((struct sockaddr_in *)entry->ifa_addr)->sin_addr, text, sizeof text) == NULL) continue;
+        address = [NSString stringWithUTF8String:text];
+        if (![addresses containsObject:address]) [addresses addObject:address];
+    }
+    freeifaddrs(list);
+    return addresses;
+}
+
+static UILabel *os_info_label(CGRect frame, NSString *text, UIColor *color, BOOL bold) {
+    UILabel *label = [[[UILabel alloc] initWithFrame:frame] autorelease];
+    label.backgroundColor = [UIColor clearColor];
+    label.font = bold ? [UIFont boldSystemFontOfSize:15] : [UIFont systemFontOfSize:15];
+    label.textColor = color;
+    label.text = text;
+    label.adjustsFontSizeToFitWidth = YES;
+    label.minimumFontSize = 11;
+    return label;
+}
+
+- (void)infoTapped:(id)sender {
+    if (_infoOverlay != nil) {
+        [self hideInfo];
+    } else {
+        [self showInfo];
+    }
+}
+
+- (void)showInfo {
+    OSServer *server = [OSServer shared];
+    NSArray *addresses = os_ipv4_addresses();
+    CGRect bounds = self.view.bounds;
+    CGFloat width = 270.0f;
+    CGFloat rowHeight = 22.0f;
+    CGFloat height = 24.0f + rowHeight * (2 + MAX((NSInteger)[addresses count], 1));
+    UIColor *keyColor = [UIColor colorWithWhite:0.45f alpha:1.0f];
+    UIColor *valueColor = [UIColor colorWithWhite:0.12f alpha:1.0f];
+    UIButton *dismiss;
+    UIView *card;
+    CGFloat y = 12.0f;
+    NSUInteger i;
+
+    /* A full-screen button behind the card: a tap anywhere closes it. */
+    _infoOverlay = [[UIView alloc] initWithFrame:bounds];
+    _infoOverlay.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    dismiss = [UIButton buttonWithType:UIButtonTypeCustom];
+    dismiss.frame = _infoOverlay.bounds;
+    dismiss.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [dismiss addTarget:self action:@selector(hideInfo) forControlEvents:UIControlEventTouchUpInside];
+    [_infoOverlay addSubview:dismiss];
+
+    card = [[UIView alloc] initWithFrame:CGRectMake(bounds.size.width - width - 8.0f, 8.0f, width, height)];
+    card.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+    card.backgroundColor = [UIColor colorWithRed:0.96f green:0.97f blue:0.98f alpha:1.0f];
+    card.layer.cornerRadius = 10.0f;
+    card.layer.borderWidth = 1.0f;
+    card.layer.borderColor = [UIColor colorWithWhite:0.82f alpha:1.0f].CGColor;
+    card.layer.shadowColor = [UIColor blackColor].CGColor;
+    card.layer.shadowOpacity = 0.25f;
+    card.layer.shadowRadius = 6.0f;
+    card.layer.shadowOffset = CGSizeMake(0, 2);
+    card.userInteractionEnabled = NO;
+
+    [card addSubview:os_info_label(CGRectMake(14, y, 100, rowHeight), NSLocalizedString(@"receive.info_name", nil), keyColor, NO)];
+    [card addSubview:os_info_label(CGRectMake(112, y, width - 124, rowHeight), [server alias], valueColor, YES)];
+    y += rowHeight;
+    [card addSubview:os_info_label(CGRectMake(14, y, 100, rowHeight), NSLocalizedString(@"receive.info_ip", nil), keyColor, NO)];
+    if ([addresses count] == 0) {
+        [card addSubview:os_info_label(CGRectMake(112, y, width - 124, rowHeight), @"–", valueColor, YES)];
+        y += rowHeight;
+    }
+    for (i = 0; i < [addresses count]; i++) {
+        [card addSubview:os_info_label(CGRectMake(112, y, width - 124, rowHeight), [addresses objectAtIndex:i], valueColor, YES)];
+        y += rowHeight;
+    }
+    [card addSubview:os_info_label(CGRectMake(14, y, 100, rowHeight), NSLocalizedString(@"receive.info_port", nil), keyColor, NO)];
+    [card addSubview:os_info_label(CGRectMake(112, y, width - 124, rowHeight),
+                                   [NSString stringWithFormat:@"%d", [server port]], valueColor, YES)];
+
+    [_infoOverlay addSubview:card];
+    [card release];
+    _infoOverlay.alpha = 0.0f;
+    [self.view addSubview:_infoOverlay];
+    [UIView animateWithDuration:0.15 animations:^{ _infoOverlay.alpha = 1.0f; }];
+}
+
+- (void)hideInfo {
+    UIView *overlay = _infoOverlay;
+    if (overlay == nil) return;
+    _infoOverlay = nil;
+    [UIView animateWithDuration:0.15 animations:^{ overlay.alpha = 0.0f; }
+                     completion:^(BOOL finished) {
+                         [overlay removeFromSuperview];
+                         [overlay release];
+                     }];
 }
 
 - (void)startWifiBreathing {
@@ -260,6 +384,7 @@
     [_progressView release];
     [_progressLabel release];
     [_footerLabel release];
+    [_infoOverlay release];
     [super dealloc];
 }
 

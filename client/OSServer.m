@@ -3611,7 +3611,10 @@ cleanup:
     NSString *path = [result objectAtIndex:1];
 
     if (success && [path length] > 0) {
-        [self writeSavedMarkerForPath:path];
+        /* One copy, like LocalSend: once it is in Photos, the copy in History goes. */
+        [[NSFileManager defaultManager] removeItemAtPath:path error:NULL];
+        os_logf(self, @"Saved to Photos, removed from History: %@", [path lastPathComponent]);
+        [[NSNotificationCenter defaultCenter] postNotificationName:OSServerDidUpdateNotification object:self];
     }
 
     if (_photoQueueRunning) {

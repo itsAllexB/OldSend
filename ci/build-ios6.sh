@@ -4,7 +4,7 @@
 # builds the same sources for armv7 only, which covers the iPhone 3GS and later.
 #
 # Needs: THEOS (with toolchain/linux/iphone and sdks/iPhoneOS9.3.sdk), ldid, dpkg-deb.
-# Output: build-ios6/OldSend.app and packages/com.lihaoyun6.oldsend_<version>_iphoneos-arm.deb
+# Output: build-ios6/OldSend.app and packages/com.itsallexb.oldsend_<version>_iphoneos-arm.deb
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -73,11 +73,11 @@ cp -R "$APP" "$STAGE/Applications/"
 cp "$OUT/OldSendShare.dylib" share/OldSendShare.plist "$STAGE/Library/MobileSubstrate/DynamicLibraries/"
 # The background service job, and the scripts that load and unload it.
 mkdir -p "$STAGE/Library/LaunchDaemons"
-cp ci/com.lihaoyun6.oldsendd.plist "$STAGE/Library/LaunchDaemons/"
-chmod 644 "$STAGE/Library/LaunchDaemons/com.lihaoyun6.oldsendd.plist"
+cp ci/com.itsallexb.oldsendd.plist "$STAGE/Library/LaunchDaemons/"
+chmod 644 "$STAGE/Library/LaunchDaemons/com.itsallexb.oldsendd.plist"
 cp ci/postinst ci/prerm "$STAGE/DEBIAN/"
 chmod 755 "$STAGE/DEBIAN/postinst" "$STAGE/DEBIAN/prerm"
 chmod 755 "$STAGE/Library/MobileSubstrate/DynamicLibraries/OldSendShare.dylib"
 chmod 644 "$STAGE/Library/MobileSubstrate/DynamicLibraries/OldSendShare.plist"
-dpkg-deb -Zgzip --root-owner-group -b "$STAGE" "packages/com.lihaoyun6.oldsend_${VERSION}_iphoneos-arm.deb"
+dpkg-deb -Zgzip --root-owner-group -b "$STAGE" "packages/com.itsallexb.oldsend_${VERSION}_iphoneos-arm.deb"
 ls -l packages/

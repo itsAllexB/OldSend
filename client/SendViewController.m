@@ -55,7 +55,8 @@
         _detailLabel.textColor = [UIColor grayColor];
         [self.contentView addSubview:_detailLabel];
 
-        _detailButton = [[UIButton buttonWithType:UIButtonTypeDetailDisclosure] retain];
+        /* The button shows the device's details, so an info button rather than a disclosure arrow. */
+        _detailButton = [[UIButton buttonWithType:UIButtonTypeInfoDark] retain];
         self.accessoryView = _detailButton;
     }
     return self;
@@ -752,13 +753,8 @@
         device = [devices objectAtIndex:indexPath.row];
 
         if (![self hasPending]) {
-            UIAlertView *alert = [[UIAlertView alloc] initWithTitle:NSLocalizedString(@"send.select_first_title", nil)
-                                                            message:NSLocalizedString(@"send.select_first_message", nil)
-                                                           delegate:nil
-                                                  cancelButtonTitle:NSLocalizedString(@"common.ok", nil)
-                                                  otherButtonTitles:nil];
-            [alert show];
-            [alert release];
+            /* Nothing chosen yet: offer the same choices as the + button. */
+            [self addTapped:nil];
             return;
         }
 

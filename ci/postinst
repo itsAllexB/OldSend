@@ -1,4 +1,4 @@
 #!/bin/sh
 # Load OldSend's background service job (it only runs while Run in Background is on).
-launchctl load /Library/LaunchDaemons/com.lihaoyun6.oldsendd.plist 2>/dev/null
+launchctl load /Library/LaunchDaemons/com.itsallexb.oldsendd.plist 2>/dev/null
 exit 0

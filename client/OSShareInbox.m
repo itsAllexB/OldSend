@@ -76,6 +76,28 @@ static NSString *os_query_value(NSURL *url, NSString *key) {
 
 @implementation OSShareInbox
 
++ (void)removeAbandonedShares {
+    NSFileManager *manager = [NSFileManager defaultManager];
+    NSMutableArray *folders = [NSMutableArray arrayWithObjects:@"/tmp", @"/var/tmp", nil];
+
+    for (NSString *app in [manager contentsOfDirectoryAtPath:@"/var/mobile/Applications" error:NULL]) {
+        [folders addObject:[[@"/var/mobile/Applications" stringByAppendingPathComponent:app]
+                            stringByAppendingPathComponent:@"tmp"]];
+    }
+    for (NSString *folder in folders) {
+        for (NSString *name in [manager contentsOfDirectoryAtPath:folder error:NULL]) {
+            NSString *path;
+            NSDate *modified;
+            if (![name hasPrefix:@"OldSendShare-"]) continue;
+            path = [folder stringByAppendingPathComponent:name];
+            modified = [[manager attributesOfItemAtPath:path error:NULL] objectForKey:NSFileModificationDate];
+            if (modified != nil && [modified timeIntervalSinceNow] < -600) {
+                [manager removeItemAtPath:path error:NULL];
+            }
+        }
+    }
+}
+
 + (BOOL)canHandleURL:(NSURL *)url {
     NSString *scheme = [[url scheme] lowercaseString];
     return [scheme isEqualToString:@"oldsend"] || [url isFileURL];

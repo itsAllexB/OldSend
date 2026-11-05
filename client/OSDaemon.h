@@ -3,7 +3,7 @@
 @class OSTransfer;
 
 /* Run in background (Settings, off by default): the OldSend binary started by launchd with
-   --daemon (/Library/LaunchDaemons/com.lihaoyun6.oldsendd.plist) runs the same LocalSend server
+   --daemon (/Library/LaunchDaemons/com.itsallexb.oldsendd.plist) runs the same LocalSend server
    headless whenever the app is not in the foreground, so the phone stays discoverable and can
    receive with the app closed.
 

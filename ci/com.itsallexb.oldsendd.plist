@@ -5,7 +5,7 @@
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>com.lihaoyun6.oldsendd</string>
+	<string>com.itsallexb.oldsendd</string>
 	<key>ProgramArguments</key>
 	<array>
 		<string>/Applications/OldSend.app/OldSend</string>
