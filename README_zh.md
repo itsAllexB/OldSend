@@ -2,10 +2,16 @@
 <p align="center">
 <img src="./client/Icon-72.png" />
 <h1 align="center">OldSend</h1>
-<h3 align="center">最低可以运行在 iOS 3.1.3 上的原生 LocalSend 兼容客户端</h3>
+<h3 align="center">适用于越狱 iOS 6 设备的原生 LocalSend 兼容客户端</h3>
 </p>
 
 [English](README.md)
+
+## OldSend 2.0
+
+这是 itsAllexB 基于 [lihaoyun6 的 OldSend](https://github.com/lihaoyun6/OldSend) 改进的 2.0 版本，面向 iOS 6 的 Retina iPhone（在 iPhone 4S、iOS 6.1.3 上测试）。新功能：可再次向桌面版 LocalSend 发送、实时传输界面、所有应用分享菜单中的 OldSend 按钮和“打开方式”、“保存到相册”开关、可选的后台运行服务、全部 Retina 图标。详见[英文说明](README.md)。
+
+致谢：感谢 **lihaoyun6** 制作了 OldSend，感谢 **LocalSend 团队** 创建了 LocalSend 及其开放协议。应用内的“设置 > 关于”中也有致谢。
 
 ## 预览
 

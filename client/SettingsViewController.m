@@ -116,7 +116,7 @@
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (section == 0) return 3;
     if (section == 1) return 4;
-    return 1;
+    return 3;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
@@ -128,7 +128,24 @@
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (section == 0) return NSLocalizedString(@"settings.save_photos_footer", nil);
     if (section == 1) return NSLocalizedString(@"settings.background_footer", nil);
-    return nil;
+    return NSLocalizedString(@"settings.credits_footer", nil);
+}
+
+/* Settings > About: who this is built on. Rows 1 and 2 open the projects' pages. */
+static NSString * const kOSCreditURLs[] = { nil, @"https://github.com/lihaoyun6/OldSend", @"https://localsend.org" };
+
+- (UITableViewCell *)creditCellWithTitle:(NSString *)title value:(NSString *)value {
+    static NSString *identifier = @"CreditCell";
+    UITableViewCell *cell = [_tableView dequeueReusableCellWithIdentifier:identifier];
+    if (cell == nil) {
+        cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1
+                                       reuseIdentifier:identifier] autorelease];
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    }
+    cell.textLabel.text = title;
+    cell.detailTextLabel.text = value;
+    cell.detailTextLabel.font = [UIFont systemFontOfSize:15];
+    return cell;
 }
 
 - (UITableViewCell *)valueCellWithTitle:(NSString *)title value:(NSString *)value {
@@ -277,10 +294,18 @@
         }
     }
 
+    if (indexPath.row == 1) {
+        return [self creditCellWithTitle:NSLocalizedString(@"settings.credit_original", nil)
+                                   value:NSLocalizedString(@"settings.credit_original_value", nil)];
+    }
+    if (indexPath.row == 2) {
+        return [self creditCellWithTitle:NSLocalizedString(@"settings.credit_localsend", nil)
+                                   value:NSLocalizedString(@"settings.credit_localsend_value", nil)];
+    }
     {
         NSString *version = [[[NSBundle mainBundle] infoDictionary] objectForKey:@"CFBundleShortVersionString"];
         return [self valueCellWithTitle:NSLocalizedString(@"settings.version", nil)
-                                  value:[NSString stringWithFormat:@"v%@", version != nil ? version : @"1.0.0"]];
+                                  value:[NSString stringWithFormat:@"v%@", version != nil ? version : @"2.0"]];
     }
 }
 
@@ -296,6 +321,10 @@ forRowAtIndexPath:(NSIndexPath *)indexPath {
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if (indexPath.section == 2 && (indexPath.row == 1 || indexPath.row == 2)) {
+        [[UIApplication sharedApplication] openURL:[NSURL URLWithString:kOSCreditURLs[indexPath.row]]];
+        return;
+    }
     if (indexPath.section == 1 && indexPath.row == 3) {
         [[OSServer shared] announceNow];
         UIAlertView *alert = [[UIAlertView alloc] initWithTitle:NSLocalizedString(@"settings.announce", nil)
