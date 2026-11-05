@@ -55,8 +55,12 @@
         _detailLabel.textColor = [UIColor grayColor];
         [self.contentView addSubview:_detailLabel];
 
-        /* The button shows the device's details, so an info button rather than a disclosure arrow. */
-        _detailButton = [[UIButton buttonWithType:UIButtonTypeInfoDark] retain];
+        /* The button shows the device's details, so an info button rather than a disclosure
+           arrow; our own icon, since iOS 6's draws an italic serif "i". */
+        _detailButton = [[UIButton buttonWithType:UIButtonTypeCustom] retain];
+        [_detailButton setImage:[UIImage imageNamed:@"InfoButtonDark.png"] forState:UIControlStateNormal];
+        _detailButton.frame = CGRectMake(0, 0, 32, 32);
+        _detailButton.showsTouchWhenHighlighted = YES;
         self.accessoryView = _detailButton;
     }
     return self;

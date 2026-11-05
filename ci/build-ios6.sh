@@ -55,7 +55,7 @@ ldid -S "$OUT/OldSendShare.dylib"
 cp client/Info.plist "$APP/"
 for f in client/Icon*.png client/Tab*.png client/ReceiveWifiLarge*.png client/Device*.png \
          client/SettingsBackground*.png client/RandomAlias*.png client/MediaVideoIcon*.png \
-         client/Default*.png client/icons/*.png; do
+         client/Default*.png client/InfoButton*.png client/icons/*.png; do
     [ -f "$f" ] && cp "$f" "$APP/"
 done
 cp client/en.lproj/Localizable.strings "$APP/en.lproj/"
