@@ -58,6 +58,7 @@ BOOL OSSenderGaveUp(void);
     NSMutableArray *_musicQueue;
     BOOL _musicThreadRunning;
     id _photoLibrary;
+    int _photoLockFD;
     NSInteger _photosTotal;
     NSInteger _photosDone;
     NSInteger _musicTotal;

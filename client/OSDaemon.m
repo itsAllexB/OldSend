@@ -189,9 +189,10 @@ void OSDaemonHoldAwake(BOOL hold) {
    running here) while it is. Leave when Run in Background is turned off. */
 - (void)tick:(NSTimer *)timer {
     OSServer *server = [OSServer shared];
-    BOOL busy = [server hasActiveSession] || gDecisionWaiting || [server savingText] != nil;
+    BOOL busy = [server hasActiveSession] || gDecisionWaiting;
 
-    if (!OSDaemonEnabled() && !busy) {
+    /* Saving into Photos or Music needs no port, so it doesn't keep the app from having it. */
+    if (!OSDaemonEnabled() && !busy && [server savingText] == nil) {
         [server appendLog:@"Run in Background turned off, stopping"];
         exit(0);
     }

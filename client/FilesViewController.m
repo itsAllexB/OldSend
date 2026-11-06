@@ -162,15 +162,6 @@ static BOOL os_is_playable_media(NSString *path) {
     }
     [view addSubview:_toolbar];
 
-    _pathLabel = [[UILabel alloc] initWithFrame:CGRectMake(10, frame.size.height - 22,
-                                                           frame.size.width - 20, 20)];
-    _pathLabel.backgroundColor = [UIColor clearColor];
-    _pathLabel.font = OSSmallFont(OSIsPad() ? 13.0f : 11.0f);
-    _pathLabel.textAlignment = UITextAlignmentCenter;
-    _pathLabel.textColor = [UIColor colorWithWhite:0.55f alpha:1.0f];
-    _pathLabel.text = OS_RECEIVED_PATH;
-    _pathLabel.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleTopMargin;
-    [view addSubview:_pathLabel];
 
     self.view = view;
     [view release];
@@ -235,11 +226,7 @@ didEndEditingRowAtIndexPath:(NSIndexPath *)indexPath {
 - (void)layoutForEditing {
     CGRect bounds = self.view.bounds;
     CGFloat toolbarHeight = _batchEditing ? 44.0f : 0.0f;
-    CGFloat pathHeight = 22.0f;
-    _tableView.frame = CGRectMake(0, 0, bounds.size.width,
-                                  bounds.size.height - toolbarHeight - pathHeight);
-    _pathLabel.frame = CGRectMake(10, bounds.size.height - toolbarHeight - pathHeight,
-                                  bounds.size.width - 20, pathHeight);
+    _tableView.frame = CGRectMake(0, 0, bounds.size.width, bounds.size.height - toolbarHeight);
     _toolbar.frame = CGRectMake(0, bounds.size.height - 44, bounds.size.width, 44);
 }
 
@@ -534,7 +521,6 @@ didEndEditingRowAtIndexPath:(NSIndexPath *)indexPath {
     [_previewURL release];
     [_tableView release];
     [_emptyLabel release];
-    [_pathLabel release];
     [_files release];
     [_toolbar release];
     [_deleteItem release];

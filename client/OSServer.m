@@ -25,6 +25,7 @@
 #include <stdarg.h>
 #include <ctype.h>
 #include <sys/stat.h>
+#include <sys/file.h>
 
 #include "cJSON.h"
 #include "mbedtls/ssl.h"
@@ -41,6 +42,7 @@
 #define OS_PORT 53317
 #define OS_PROTOCOL_VERSION "2.2"
 #define OS_RECEIVED_DIR "/var/mobile/Library/OldSend/Received"
+#define OS_PHOTOS_LOCK "/var/mobile/Library/OldSend/.photos.lock"
 #define OS_MAX_FILES 1000  /* per session; LocalSend skips files that get no token */
 #define OS_MAX_JSON (8 * 1024 * 1024)
 
@@ -1285,6 +1287,7 @@ static void os_apply_transfer_event(OSTransfer *transfer, NSArray *event) {
         _receivedTexts = [[NSMutableArray alloc] init];
         _musicQueue = [[NSMutableArray alloc] init];
         _musicKept = [[NSMutableArray alloc] init];
+        _photoLockFD = -1;
     }
     return self;
 }
@@ -3717,6 +3720,7 @@ cleanup:
         _savingCount = 0;
         _photosTotal = 0;
         _photosDone = 0;
+        if (_photoLockFD >= 0) flock(_photoLockFD, LOCK_UN);
         [self updateSavingStatus];
         [self showPendingReceiveCompleteAlert];
         return;
@@ -3768,7 +3772,8 @@ cleanup:
             [extension isEqualToString:@"mp4"] ||
             [extension isEqualToString:@"mov"] ||
             [extension isEqualToString:@"m4v"]) {
-            BOOL queued = [path isEqualToString:_photoActivePath] && _photoQueueRunning;
+            BOOL queued = ([path isEqualToString:_photoActivePath] && _photoQueueRunning) ||
+                          ![[NSFileManager defaultManager] fileExistsAtPath:path];
             for (NSArray *existing in _photoQueue) {
                 if ([[existing objectAtIndex:0] isEqualToString:path]) queued = YES;
             }
@@ -3780,6 +3785,16 @@ cleanup:
     }
 
     if (added && !_photoQueueRunning) {
+        /* The app and the background service both save, and must not save the same file twice: one
+           queue at a time. The other looks again soon; what has been saved by then has left History. */
+        if (_photoLockFD < 0) _photoLockFD = open(OS_PHOTOS_LOCK, O_RDWR | O_CREAT, 0644);
+        if (_photoLockFD >= 0 && flock(_photoLockFD, LOCK_EX | LOCK_NB) != 0) {
+            NSArray *waiting = [[_photoQueue copy] autorelease];
+            [_photoQueue removeAllObjects];
+            _photosTotal = 0;
+            [self performSelector:@selector(enqueuePhotoBatch:) withObject:waiting afterDelay:3.0];
+            return;
+        }
         _photoQueueRunning = YES;
         _savingCount = 1;
         [self saveNextPhoto];
@@ -3807,7 +3822,10 @@ cleanup:
                    [extension isEqualToString:@"m4v"];
 
     if (_photoLibrary == nil) _photoLibrary = [[ALAssetsLibrary alloc] init];
-    if (isImage) {
+    if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
+        /* Gone since it was queued: deleted from History, or saved by the other process. */
+        [self libraryDidSavePath:path token:token error:nil];
+    } else if (isImage) {
         /* The file as it is, handed straight to the library: nothing decodes or re-encodes it,
            which is what took the time (and kept UIImageWriteToSavedPhotosAlbum from keeping the
            original). Mapped, not read into memory. */

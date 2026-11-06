@@ -3,7 +3,6 @@
 @interface FilesViewController : UIViewController <UITableViewDataSource, UITableViewDelegate, UIAlertViewDelegate> {
     UITableView *_tableView;
     UILabel *_emptyLabel;
-    UILabel *_pathLabel;
     NSArray *_files;
     UIToolbar *_toolbar;
     UIBarButtonItem *_deleteItem;
