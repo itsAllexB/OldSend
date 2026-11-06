@@ -268,12 +268,19 @@ static id os_init_with_items(id self, SEL _cmd, NSArray *items, NSArray *activit
 /* In SpringBoard: post the notifications OldSend's background service queues as
    /var/mobile/Library/OldSend/daemon/notify-*.plist. A process without an app of its own cannot
    post an app's notification, so SpringBoard schedules them as OldSend's local notifications;
-   tapping one opens OldSend. */
+   tapping one opens OldSend. A file with "request" marks the "tap to accept" notification, and one
+   with "withdraw" takes it back out of Notification Center once the request has been answered. */
+#define OS_APP_IDENTIFIER @"com.lihaoyun6.oldsend"
+
 @interface NSObject (OSSpringBoard)
 + (id)sharedInstance;
 - (id)applicationWithDisplayIdentifier:(NSString *)identifier;
 - (void)scheduleLocalNotifications:(NSArray *)notifications replaceExistingNotifications:(BOOL)replace;
+- (void)cancelLocalNotification:(UILocalNotification *)notification;
+- (BOOL)usesLocalNotifications;
 @end
+
+static UILocalNotification *gRequestNotification;
 
 static void os_post_service_notifications(void) {
     NSString *directory = @"/var/mobile/Library/OldSend/daemon";
@@ -282,29 +289,62 @@ static void os_post_service_notifications(void) {
                       sortedArrayUsingSelector:@selector(compare:)];
     NSMutableArray *notifications = [NSMutableArray array];
     Class controller = NSClassFromString(@"SBApplicationController");
+    BOOL withdraw = NO;
     id app;
 
     for (NSString *name in names) {
         NSString *path;
+        NSDictionary *item;
         NSString *body;
         UILocalNotification *notification;
 
         if (![name hasPrefix:@"notify-"]) continue;
         path = [directory stringByAppendingPathComponent:name];
-        body = [[NSDictionary dictionaryWithContentsOfFile:path] objectForKey:@"body"];
+        item = [NSDictionary dictionaryWithContentsOfFile:path];
         [manager removeItemAtPath:path error:NULL];
+        if ([[item objectForKey:@"withdraw"] boolValue]) withdraw = YES;
+        body = [item objectForKey:@"body"];
         if (![body isKindOfClass:[NSString class]] || [body length] == 0) continue;
         notification = [[[UILocalNotification alloc] init] autorelease];
         notification.fireDate = [NSDate dateWithTimeIntervalSinceNow:0.5];
         notification.alertBody = body;
         notification.soundName = UILocalNotificationDefaultSoundName;
         [notifications addObject:notification];
+        if ([[item objectForKey:@"request"] boolValue]) {
+            [gRequestNotification release];
+            gRequestNotification = [notification retain];
+        }
     }
-    if ([notifications count] == 0 || controller == Nil) return;
-    app = [[controller sharedInstance] applicationWithDisplayIdentifier:@"com.lihaoyun6.oldsend"];
-    if ([app respondsToSelector:@selector(scheduleLocalNotifications:replaceExistingNotifications:)]) {
+    if (controller == Nil) return;
+    app = [[controller sharedInstance] applicationWithDisplayIdentifier:OS_APP_IDENTIFIER];
+    if ([notifications count] > 0 &&
+        [app respondsToSelector:@selector(scheduleLocalNotifications:replaceExistingNotifications:)]) {
         [app scheduleLocalNotifications:notifications replaceExistingNotifications:NO];
     }
+    if (withdraw && gRequestNotification != nil) {
+        if ([app respondsToSelector:@selector(cancelLocalNotification:)]) {
+            [app cancelLocalNotification:gRequestNotification];
+        }
+        [gRequestNotification release];
+        gRequestNotification = nil;
+    }
+}
+
+/* iOS 6 gives a system app (anything in /Applications) a Notification Center section only if it is
+   tagged SBInternalAppTag, and SBInternalAppTag also hides its icon. So instead of the tag, add
+   OldSend to the one list that decides the section, under the same condition the original applies. */
+static NSArray *(*os_original_local_ids)(id, SEL);
+
+static NSArray *os_local_ids(id self, SEL _cmd) {
+    NSArray *identifiers = os_original_local_ids(self, _cmd);
+    id app = [[NSClassFromString(@"SBApplicationController") sharedInstance]
+              applicationWithDisplayIdentifier:OS_APP_IDENTIFIER];
+
+    if ([app respondsToSelector:@selector(usesLocalNotifications)] && [app usesLocalNotifications] &&
+        ![identifiers containsObject:OS_APP_IDENTIFIER]) {
+        return [identifiers arrayByAddingObject:OS_APP_IDENTIFIER];
+    }
+    return identifiers;
 }
 
 __attribute__((constructor)) static void os_share_init(void) {
@@ -315,6 +355,11 @@ __attribute__((constructor)) static void os_share_init(void) {
 
     if ([bundle isEqualToString:@"com.apple.springboard"]) {
         int token;
+        method = class_getInstanceMethod(NSClassFromString(@"SBPushStore"),
+                                         NSSelectorFromString(@"allLocalNotificationEnabledBundleIDs"));
+        if (method != NULL) {
+            os_original_local_ids = (NSArray *(*)(id, SEL))method_setImplementation(method, (IMP)os_local_ids);
+        }
         notify_register_dispatch("com.lihaoyun6.oldsend.notify", &token, dispatch_get_main_queue(), ^(int t) {
             NSAutoreleasePool *inner = [[NSAutoreleasePool alloc] init];
             os_post_service_notifications();

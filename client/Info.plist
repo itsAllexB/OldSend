@@ -53,10 +53,6 @@
 		<string>Icon-Small-50.png</string>
 		<string>Icon-Small-50@2x.png</string>
 	</array>
-	<key>SBAppTags</key>
-	<array>
-		<string>SBInternalAppTag</string>
-	</array>
 	<key>CFBundleIdentifier</key>
 	<string>com.lihaoyun6.oldsend</string>
 	<key>CFBundleName</key>

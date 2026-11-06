@@ -74,16 +74,21 @@ BOOL OSDaemonAppIsActive(void) {
     return pid > 0 && kill((pid_t)pid, 0) == 0;
 }
 
-void OSDaemonNotify(NSString *body) {
+/* A notify-*.plist for OldSend's add-on in SpringBoard (share/OldSendShare.m) to act on. */
+static void os_queue_notification(NSDictionary *item) {
     NSString *path;
 
-    if (!gHeadless || [body length] == 0 || OSDaemonAppIsActive()) return;
     os_ensure_dir();
     path = [OS_DAEMON_DIR stringByAppendingPathComponent:
             [NSString stringWithFormat:@"notify-%.3f-%u.plist",
              [NSDate timeIntervalSinceReferenceDate], (unsigned)arc4random()]];
-    [[NSDictionary dictionaryWithObject:body forKey:@"body"] writeToFile:path atomically:YES];
+    [item writeToFile:path atomically:YES];
     os_post(OS_NOTE_NOTIFY);
+}
+
+void OSDaemonNotify(NSString *body) {
+    if (!gHeadless || [body length] == 0 || OSDaemonAppIsActive()) return;
+    os_queue_notification([NSDictionary dictionaryWithObject:body forKey:@"body"]);
 }
 
 static volatile BOOL gDecisionWaiting = NO;
@@ -100,7 +105,10 @@ BOOL OSDaemonAsk(NSString *title, NSString *message, NSString *notificationBody)
       message != nil ? message : @"", @"message", nil] writeToFile:OS_REQUEST_PATH atomically:YES];
     gDecisionWaiting = YES;
     os_post(OS_NOTE_CHANGED);
-    OSDaemonNotify(notificationBody);
+    if (gHeadless && [notificationBody length] > 0 && !OSDaemonAppIsActive()) {
+        os_queue_notification([NSDictionary dictionaryWithObjectsAndKeys:notificationBody, @"body",
+                               [NSNumber numberWithBool:YES], @"request", nil]);
+    }
 
     while ([deadline timeIntervalSinceNow] > 0) {
         NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
@@ -116,6 +124,8 @@ BOOL OSDaemonAsk(NSString *title, NSString *message, NSString *notificationBody)
         usleep(250000);
     }
     gDecisionWaiting = NO;
+    /* The request is answered or gone: "Tap to accept" shouldn't stay in Notification Center. */
+    os_queue_notification([NSDictionary dictionaryWithObject:[NSNumber numberWithBool:YES] forKey:@"withdraw"]);
     [[NSFileManager defaultManager] removeItemAtPath:OS_REQUEST_PATH error:NULL];
     [[NSFileManager defaultManager] removeItemAtPath:OS_DECISION_PATH error:NULL];
     os_post(OS_NOTE_CHANGED);
