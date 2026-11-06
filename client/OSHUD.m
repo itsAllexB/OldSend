@@ -153,11 +153,6 @@ NSString * const OSHUDDidCancelNotification = @"OSHUDDidCancelNotification";
     [self showWithTitle:[info objectAtIndex:0] message:[info objectAtIndex:1]];
 }
 
-+ (void)showSaving {
-    [self showWithTitle:NSLocalizedString(@"hud.saving_title", nil)
-                message:NSLocalizedString(@"hud.saving_message", nil)];
-}
-
 + (void)showSendingTo:(NSString *)alias {
     [self showWithTitle:NSLocalizedString(@"hud.sending_title", nil)
                 message:[NSString stringWithFormat:NSLocalizedString(@"hud.sending_message", nil), alias]];

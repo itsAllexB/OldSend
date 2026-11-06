@@ -10,3 +10,7 @@ UIFont *OSSmallFont(CGFloat size) {
     if (OSIsPad()) return [UIFont boldSystemFontOfSize:size];
     return [UIFont systemFontOfSize:size];
 }
+
+NSString *OSCountedString(NSString *key, NSInteger count) {
+    return NSLocalizedString(count == 1 ? [key stringByAppendingString:@".one"] : key, nil);
+}

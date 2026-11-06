@@ -231,6 +231,11 @@ static NSString *os_device_icon(NSString *type) {
                                              selector:@selector(transferDidChange:)
                                                  name:OSTransferDidChangeNotification
                                                object:_transfer];
+    /* After the transfer: "Saving to Photos… 3 of 15". */
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(transferDidChange:)
+                                                 name:OSServerDidUpdateNotification
+                                               object:nil];
     [self refresh];
 }
 
@@ -288,8 +293,17 @@ static NSString *os_device_icon(NSString *type) {
     [self dismissModalViewControllerAnimated:YES];
 }
 
+/* Received files on their way into Photos or Music, in this process: nil otherwise. */
+- (NSString *)savingText {
+    if (_transfer.sending || _transfer.remote || _transfer.state != OSTransferStateFinished) return nil;
+    return [[OSServer shared] savingText];
+}
+
 - (NSString *)stateText {
     NSString *alias = _transfer.peerAlias;
+    NSString *saving = [self savingText];
+
+    if (saving != nil) return saving;
     switch (_transfer.state) {
         case OSTransferStateWaiting:
             return [NSString stringWithFormat:NSLocalizedString(@"transfer.waiting", nil), alias];
@@ -298,7 +312,7 @@ static NSString *os_device_icon(NSString *type) {
                                                                                   : @"transfer.receiving_from", nil),
                     alias];
         case OSTransferStateFinished:
-            return NSLocalizedString(@"transfer.finished", nil);
+            return [_transfer.message length] > 0 ? _transfer.message : NSLocalizedString(@"transfer.finished", nil);
         case OSTransferStateDeclined:
             return [NSString stringWithFormat:NSLocalizedString(@"transfer.declined", nil), alias];
         case OSTransferStateCancelled:
@@ -315,9 +329,13 @@ static NSString *os_device_icon(NSString *type) {
     float progress = total > 0 ? (float)((double)done / (double)total) : (_transfer.state == OSTransferStateFinished ? 1.0f : 0.0f);
     double speed = [_transfer bytesPerSecond];
     UIColor *stateColor = [UIColor colorWithWhite:0.45f alpha:1.0f];
+    BOOL saving = [self savingText] != nil;
 
     if (progress > 1.0f) progress = 1.0f;
-    if (_transfer.state == OSTransferStateFinished) {
+    if (saving) {
+        /* The bar now counts what has gone into Photos or Music. */
+        progress = [[OSServer shared] savingProgress];
+    } else if (_transfer.state == OSTransferStateFinished) {
         stateColor = [UIColor colorWithRed:0.10f green:0.55f blue:0.20f alpha:1.0f];
     } else if (!active) {
         stateColor = [UIColor colorWithRed:0.80f green:0.15f blue:0.15f alpha:1.0f];

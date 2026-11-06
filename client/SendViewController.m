@@ -595,7 +595,7 @@
                 mediaCount, [self formatBytes:mediaBytes]];
     }
     if (fileCount > 0 && mediaCount == 0 && textCount == 0) {
-        return [NSString stringWithFormat:NSLocalizedString(@"send.pending_files", nil),
+        return [NSString stringWithFormat:OSCountedString(@"send.pending_files", fileCount),
                 fileCount, [self formatBytes:fileBytes]];
     }
     if (textCount > 0 && mediaCount == 0 && fileCount == 0) {
@@ -617,11 +617,11 @@
         }
         if (fileCount > 0) {
             [parts addObject:[NSString stringWithFormat:
-                              NSLocalizedString(@"send.count_files", nil), fileCount]];
+                              OSCountedString(@"send.count_files", fileCount), fileCount]];
         }
         if (textCount > 0) {
             [parts addObject:[NSString stringWithFormat:
-                              NSLocalizedString(@"send.count_texts", nil), textCount]];
+                              OSCountedString(@"send.count_texts", textCount), textCount]];
         }
         [summary appendString:[parts componentsJoinedByString:
                                 NSLocalizedString(@"common.list_separator", nil)]];

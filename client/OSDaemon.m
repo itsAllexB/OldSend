@@ -189,7 +189,7 @@ void OSDaemonHoldAwake(BOOL hold) {
    running here) while it is. Leave when Run in Background is turned off. */
 - (void)tick:(NSTimer *)timer {
     OSServer *server = [OSServer shared];
-    BOOL busy = [server hasActiveSession] || gDecisionWaiting;
+    BOOL busy = [server hasActiveSession] || gDecisionWaiting || [server savingText] != nil;
 
     if (!OSDaemonEnabled() && !busy) {
         [server appendLog:@"Run in Background turned off, stopping"];

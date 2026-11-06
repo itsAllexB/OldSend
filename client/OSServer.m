@@ -1,4 +1,6 @@
+#import "OSPlatform.h"
 #import "OSServer.h"
+#import <AssetsLibrary/AssetsLibrary.h>
 #import "OSHUD.h"
 #import "OSTransfer.h"
 #import "OSDaemon.h"
@@ -65,6 +67,7 @@ typedef struct {
     long long size;
     char sha256[65];
     int uploaded;
+    int failed;  /* this file didn't arrive; the rest of the session goes on */
     int isMessage;
     int transferIndex;  /* row on the transfer screen; -1 for text messages, which are not listed */
 } OSFileEntry;
@@ -123,7 +126,14 @@ static void os_file_log(NSString *line) {
     }
     file = fopen("/var/mobile/oldsend.log", "a");
     if (file == NULL) return;
-    fprintf(file, "%s%s\n", OSIsHeadless() ? "[background] " : "", [line UTF8String]);
+    {
+        struct timeval now;
+        struct tm parts;
+        gettimeofday(&now, NULL);
+        localtime_r(&now.tv_sec, &parts);
+        fprintf(file, "%02d:%02d:%02d.%03d %s%s\n", parts.tm_hour, parts.tm_min, parts.tm_sec,
+                (int)(now.tv_usec / 1000), OSIsHeadless() ? "[background] " : "", [line UTF8String]);
+    }
     fflush(file);
     fclose(file);
 }
@@ -409,6 +419,23 @@ static int os_ssl_read_exact(mbedtls_ssl_context *ssl, unsigned char *buf, size_
         offset += (size_t)n;
     }
     return 0;
+}
+
+/* Closing a socket with unread data resets the connection, and the sender then loses the answer
+   it was just sent: a desktop LocalSend reports hyper::Error(IncompleteMessage). So say we're done
+   and read what the sender still has on its way, for a moment. */
+static void os_finish_connection(int fd) {
+    char discard[8192];
+    struct timeval tv = { 0, 250000 };
+    NSTimeInterval deadline = [NSDate timeIntervalSinceReferenceDate] + 2.0;
+
+    shutdown(fd, SHUT_WR);
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    while ([NSDate timeIntervalSinceReferenceDate] < deadline) {
+        ssize_t n = recv(fd, discard, sizeof discard, 0);
+        if (n == 0) break;
+        if (n < 0 && errno != EINTR) break;  /* nothing more within the timeout */
+    }
 }
 
 static int os_random_hex(OSIdentity *identity, char *out, size_t bytes) {
@@ -1081,6 +1108,8 @@ static NSString *os_unique_path(NSString *directory, NSString *name) {
 - (void)writeSavedMarkerForPath:(NSString *)path;
 - (void)enqueueMusic:(NSArray *)paths;
 - (void)postServerUpdate;
+- (void)finishReceiveSession;
+- (int)uploadFailed:(OSFileEntry *)entry status:(int)status reason:(NSString *)reason;
 @end
 
 @implementation OSServer
@@ -1115,6 +1144,8 @@ static void os_apply_transfer_event(OSTransfer *transfer, NSArray *event) {
         [transfer fileFinished:index];
     } else if ([kind isEqualToString:@"skip"]) {
         [transfer fileSkipped:index];
+    } else if ([kind isEqualToString:@"fail"]) {
+        [transfer fileFailed:index];
     }
 }
 
@@ -1162,7 +1193,7 @@ static void os_apply_transfer_event(OSTransfer *transfer, NSArray *event) {
     _publishTimer = nil;
     OSDaemonHoldAwake(NO);
     if (transfer.state == OSTransferStateFinished) {
-        OSDaemonNotify([NSString stringWithFormat:NSLocalizedString(@"daemon.received", nil),
+        OSDaemonNotify([NSString stringWithFormat:OSCountedString(@"daemon.received", [transfer finishedFileCount]),
                         (int)[transfer finishedFileCount], transfer.peerAlias]);
     } else if (transfer.state == OSTransferStateFailed) {
         OSDaemonNotify([NSString stringWithFormat:NSLocalizedString(@"daemon.interrupted", nil),
@@ -1250,10 +1281,10 @@ static void os_apply_transfer_event(OSTransfer *transfer, NSArray *event) {
         _devices = [[NSMutableArray alloc] init];
         _receiveStatus = [NSLocalizedString(@"status.waiting", nil) copy];
         _uploadName = [@"" copy];
-        _photoCondition = [[NSCondition alloc] init];
         _decisionCondition = [[NSCondition alloc] init];
         _receivedTexts = [[NSMutableArray alloc] init];
         _musicQueue = [[NSMutableArray alloc] init];
+        _musicKept = [[NSMutableArray alloc] init];
     }
     return self;
 }
@@ -1441,7 +1472,7 @@ static void os_apply_transfer_event(OSTransfer *transfer, NSArray *event) {
         _sessionBaseBytes = 0;
         _currentFileWritten = 0;
         _sessionTotalBytes = 0;
-        if (_savingCount == 0) {
+        if (_savingCount == 0 && !_musicThreadRunning) {
             [self setReceiveStatusText:NSLocalizedString(@"status.waiting", nil)];
         }
         [self stopReceiveWatchdog];
@@ -1551,6 +1582,14 @@ static void os_apply_transfer_event(OSTransfer *transfer, NSArray *event) {
                                 NSLocalizedString(@"status.received", nil), _uploadName]];
 }
 
+/* A file failed but the session goes on: the watchdog may run again, or a sender that has gone
+   would keep the session open for good. */
+- (void)fileFailedDuringReceive {
+    _receiving = NO;
+    _currentFileWritten = 0;
+    [self touchReceiveActivity];
+}
+
 - (void)queueReceiveCompleteAlert:(NSNumber *)count {
     if (![NSThread isMainThread]) {
         [self performSelectorOnMainThread:@selector(queueReceiveCompleteAlert:)
@@ -1567,7 +1606,7 @@ static void os_apply_transfer_event(OSTransfer *transfer, NSArray *event) {
     NSNumber *count;
 
     if (_pendingReceiveCompleteCount <= 0) return;
-    if (_savingCount > 0 || _photoQueueRunning) return;
+    if (_savingCount > 0 || _photoQueueRunning || _musicThreadRunning) return;
 
     count = [NSNumber numberWithInteger:_pendingReceiveCompleteCount];
     _pendingReceiveCompleteCount = 0;
@@ -1587,7 +1626,7 @@ static void os_apply_transfer_event(OSTransfer *transfer, NSArray *event) {
     if (OSIsHeadless()) return;
     alert = [[UIAlertView alloc] initWithTitle:NSLocalizedString(@"receive.complete_title", nil)
                                        message:[NSString stringWithFormat:
-                                                NSLocalizedString(@"receive.complete_message", nil),
+                                                OSCountedString(@"receive.complete_message", [count intValue]),
                                                 [count intValue]]
                                       delegate:nil
                              cancelButtonTitle:NSLocalizedString(@"common.ok", nil)
@@ -1730,24 +1769,46 @@ static void os_apply_transfer_event(OSTransfer *transfer, NSArray *event) {
 }
 
 - (void)clearFailureStatus {
-    if (!_sessionActive && !_receiving && _savingCount == 0) {
+    if (!_sessionActive && !_receiving && _savingCount == 0 && !_musicThreadRunning) {
         [self setReceiveStatusText:NSLocalizedString(@"status.waiting", nil)];
     }
 }
 
+- (NSString *)savingText {
+    if (_savingCount > 0 && _photosTotal > 0) {
+        return [NSString stringWithFormat:OSCountedString(@"status.saving_photos", _photosTotal),
+                (int)MIN(_photosDone + 1, _photosTotal), (int)_photosTotal];
+    }
+    if (_musicThreadRunning && _musicTotal > 0) {
+        return [NSString stringWithFormat:OSCountedString(@"status.saving_music", _musicTotal),
+                (int)MIN(_musicDone + 1, _musicTotal), (int)_musicTotal];
+    }
+    return nil;
+}
+
+- (float)savingProgress {
+    if (_savingCount > 0 && _photosTotal > 0) return (float)_photosDone / (float)_photosTotal;
+    if (_musicThreadRunning && _musicTotal > 0) return (float)_musicDone / (float)_musicTotal;
+    return 0.0f;
+}
+
 - (void)updateSavingStatus {
+    NSString *saving;
+
     if (![NSThread isMainThread]) {
         [self performSelectorOnMainThread:@selector(updateSavingStatus)
                                withObject:nil
                             waitUntilDone:NO];
         return;
     }
+    saving = [self savingText];
+    if (OSIsHeadless()) {
+        OSDaemonHoldAwake(saving != nil || (_receiveTransfer != nil && [_receiveTransfer isActive]));
+    }
     [_receiveStatus release];
-    if (_savingCount > 0) {
-        _receiveStatus = [NSLocalizedString(@"status.saving", nil) copy];
-        [OSHUD showSaving];
+    if (saving != nil) {
+        _receiveStatus = [saving copy];
     } else {
-        [OSHUD hideSaving];
         if (_receiving) {
             _receiveStatus = [[NSString stringWithFormat:
                                NSLocalizedString(@"status.receiving", nil), _uploadName] copy];
@@ -2304,7 +2365,7 @@ static int os_open_discovery_socket(OSServer *server, BOOL log) {
 
 - (void)retryPendingPhotos {
     [self retryPendingMusic];
-    if (_retryingPhotos || OSIsHeadless()) return;
+    if (_retryingPhotos) return;
     _retryingPhotos = YES;
     [NSThread detachNewThreadSelector:@selector(retryPendingPhotosThread) toTarget:self withObject:nil];
 }
@@ -2453,11 +2514,25 @@ static int os_open_discovery_socket(OSServer *server, BOOL log) {
             peer);
 
     gClientFD = clientFD;
-    [self handleHTTP:&ssl peer:peer];
+    @try {
+        [self handleHTTP:&ssl peer:peer];
+    } @catch (NSException *exception) {
+        /* One bad request costs that request (and its session, whose state is now unknown). */
+        os_logf(self, @"Request failed: %@: %@", [exception name], [exception reason]);
+        if (gSession.active) {
+            gSession.active = 0;
+            gSession.remaining = 0;
+            [self performSelectorOnMainThread:@selector(failReceivingFile)
+                                   withObject:nil
+                                waitUntilDone:NO];
+        }
+        [self sendResponse:&ssl status:500 body:nil];
+    }
     gClientFD = -1;
 
     mbedtls_ssl_close_notify(&ssl);
     mbedtls_ssl_free(&ssl);
+    os_finish_connection(clientFD);
 }
 
 - (void)sendResponse:(mbedtls_ssl_context *)ssl status:(int)status body:(NSString *)body {
@@ -2971,7 +3046,7 @@ cleanup:
        post a notification too; opening OldSend from it shows the waiting alert. */
     if ([[UIApplication sharedApplication] applicationState] != UIApplicationStateActive) {
         UILocalNotification *notification = [[UILocalNotification alloc] init];
-        notification.alertBody = [NSString stringWithFormat:@"%@\n%@", title, message];
+        notification.alertBody = [info objectAtIndex:2];
         notification.soundName = UILocalNotificationDefaultSoundName;
         [[UIApplication sharedApplication] presentLocalNotificationNow:notification];
         [notification release];
@@ -3002,7 +3077,7 @@ cleanup:
     }
 }
 
-- (BOOL)askToAcceptWithTitle:(NSString *)title message:(NSString *)message {
+- (BOOL)askToAcceptWithTitle:(NSString *)title message:(NSString *)message banner:(NSString *)banner {
     NSArray *info;
     BOOL accepted;
 
@@ -3012,7 +3087,7 @@ cleanup:
     [_decisionCondition unlock];
 
     info = [NSArray arrayWithObjects:title,
-            message != nil ? message : @"", nil];
+            message != nil ? message : @"", banner, nil];
     [self performSelectorOnMainThread:@selector(showDecisionAlert:)
                            withObject:info
                         waitUntilDone:NO];
@@ -3157,7 +3232,7 @@ cleanup:
                 if (i > 0) [summary appendString:@"\n"];
                 [summary appendString:os_nsstring(session->files[i].name)];
             }
-            message = [NSString stringWithFormat:NSLocalizedString(@"receive.file_message", nil),
+            message = [NSString stringWithFormat:OSCountedString(@"receive.file_message", session->count),
                        sender, session->count, summary];
         } else {
             NSMutableArray *parts = [NSMutableArray array];
@@ -3165,23 +3240,23 @@ cleanup:
 
             if (images > 0) {
                 [parts addObject:[NSString stringWithFormat:
-                                  NSLocalizedString(@"receive.count_images", nil), images]];
+                                  OSCountedString(@"receive.count_images", images), images]];
             }
             if (videos > 0) {
                 [parts addObject:[NSString stringWithFormat:
-                                  NSLocalizedString(@"receive.count_videos", nil), videos]];
+                                  OSCountedString(@"receive.count_videos", videos), videos]];
             }
             if (audio > 0) {
                 [parts addObject:[NSString stringWithFormat:
-                                  NSLocalizedString(@"receive.count_audio", nil), audio]];
+                                  OSCountedString(@"receive.count_audio", audio), audio]];
             }
             if (textFiles > 0) {
                 [parts addObject:[NSString stringWithFormat:
-                                  NSLocalizedString(@"receive.count_text", nil), textFiles]];
+                                  OSCountedString(@"receive.count_text", textFiles), textFiles]];
             }
             if (other > 0) {
                 [parts addObject:[NSString stringWithFormat:
-                                  NSLocalizedString(@"receive.count_other", nil), other]];
+                                  OSCountedString(@"receive.count_other", other), other]];
             }
             typeSummary = [parts componentsJoinedByString:
                            NSLocalizedString(@"common.list_separator", nil)];
@@ -3213,14 +3288,15 @@ cleanup:
         [self performSelectorOnMainThread:@selector(setReceiveStatusText:)
                                withObject:NSLocalizedString(@"status.preparing", nil)
                             waitUntilDone:NO];
+        /* A notification; tapping it opens the app with the prompt. iOS 6's banner has one line for
+           this and cuts the rest, so it's short, with the sender's name last: only that can be cut. */
+        NSString *body = textOnly
+            ? [NSString stringWithFormat:NSLocalizedString(@"daemon.request_text", nil), sender]
+            : [NSString stringWithFormat:OSCountedString(@"daemon.request_files", session->count), sender, session->count];
         if (OSIsHeadless()) {
-            /* Background service: a notification; tapping it opens the app with the prompt. */
-            NSString *body = textOnly
-                ? [NSString stringWithFormat:NSLocalizedString(@"daemon.request_text", nil), sender]
-                : [NSString stringWithFormat:NSLocalizedString(@"daemon.request_files", nil), sender, session->count];
             accepted = OSDaemonAsk(title, message, body);
         } else {
-            accepted = [self askToAcceptWithTitle:title message:message];
+            accepted = [self askToAcceptWithTitle:title message:message banner:body];
         }
     }
 
@@ -3368,12 +3444,7 @@ cleanup:
                 [NSString stringWithFormat:@"%s-%d.part", gSession.sessionId, i]];
     file = fopen([tempPath fileSystemRepresentation], "wb");
     if (file == NULL) {
-        gSession.active = 0;
-        gSession.remaining = 0;
-        [self performSelectorOnMainThread:@selector(failReceivingFile)
-                               withObject:nil
-                            waitUntilDone:NO];
-        return 500;
+        return [self uploadFailed:entry status:500 reason:@"Can't create the file"];
     }
 
     mbedtls_sha256_init(&sha);
@@ -3397,13 +3468,7 @@ cleanup:
             fclose(file);
             unlink([tempPath fileSystemRepresentation]);
             mbedtls_sha256_free(&sha);
-            gSession.active = 0;
-            gSession.remaining = 0;
-            [self performSelectorOnMainThread:@selector(failReceivingFile)
-                                   withObject:nil
-                                waitUntilDone:NO];
-            os_logf(self, @"Upload interrupted: %s", entry->name);
-            return 400;
+            return [self uploadFailed:entry status:400 reason:@"Upload interrupted"];
         }
     }
     fclose(file);
@@ -3426,24 +3491,13 @@ cleanup:
 
     if (entry->size > 0 && written != entry->size) {
         unlink([tempPath fileSystemRepresentation]);
-        gSession.active = 0;
-        gSession.remaining = 0;
-        [self performSelectorOnMainThread:@selector(failReceivingFile)
-                               withObject:nil
-                            waitUntilDone:NO];
-        os_logf(self, @"Size mismatch: %s (%lld / %lld)", entry->name, written, entry->size);
-        return 400;
+        return [self uploadFailed:entry status:400
+                           reason:[NSString stringWithFormat:@"Size mismatch (%lld / %lld)", written, entry->size]];
     }
 
     if (entry->sha256[0] != '\0' && strcasecmp(digestHex, entry->sha256) != 0) {
         unlink([tempPath fileSystemRepresentation]);
-        gSession.active = 0;
-        gSession.remaining = 0;
-        [self performSelectorOnMainThread:@selector(failReceivingFile)
-                               withObject:nil
-                            waitUntilDone:NO];
-        os_logf(self, @"Checksum mismatch: %s", entry->name);
-        return 422;
+        return [self uploadFailed:entry status:422 reason:@"Checksum mismatch"];
     }
 
     if (isTextEntry) {
@@ -3473,12 +3527,7 @@ cleanup:
                                                          toPath:finalPath
                                                           error:NULL]) {
                 unlink([tempPath fileSystemRepresentation]);
-                gSession.active = 0;
-                gSession.remaining = 0;
-                [self performSelectorOnMainThread:@selector(failReceivingFile)
-                                       withObject:nil
-                                    waitUntilDone:NO];
-                return 500;
+                return [self uploadFailed:entry status:500 reason:@"Can't move the file"];
             }
             entry->uploaded = 1;
             snprintf(entry->path, sizeof entry->path, "%s", [finalPath fileSystemRepresentation]);
@@ -3496,12 +3545,7 @@ cleanup:
                                                      toPath:finalPath
                                                       error:NULL]) {
             unlink([tempPath fileSystemRepresentation]);
-            gSession.active = 0;
-            gSession.remaining = 0;
-            [self performSelectorOnMainThread:@selector(failReceivingFile)
-                                   withObject:nil
-                                waitUntilDone:NO];
-            return 500;
+            return [self uploadFailed:entry status:500 reason:@"Can't move the file"];
         }
         /* A new file: a "handled" marker left by an earlier file of the same name (one deleted
            outside History) must not keep this one from going to Photos or Music. */
@@ -3520,112 +3564,119 @@ cleanup:
                 entry->name, written, [finalPath lastPathComponent]);
     }
 
-    if (gSession.remaining <= 0) {
-        NSMutableArray *photos = [NSMutableArray array];
-        NSMutableArray *music = [NSMutableArray array];
-        int receivedFileCount = 0;
-        int j;
-
-        for (j = 0; j < gSession.count; j++) {
-            OSFileEntry *item = &gSession.files[j];
-            NSString *extension;
-
-            if (!item->uploaded || item->path[0] == '\0') continue;
-            receivedFileCount++;
-            extension = [[[NSString stringWithUTF8String:item->path] pathExtension] lowercaseString];
-
-            if (strncmp(item->type, "image/", 6) == 0 ||
-                strncmp(item->type, "video/", 6) == 0 ||
-                [extension isEqualToString:@"jpg"] ||
-                [extension isEqualToString:@"jpeg"] ||
-                [extension isEqualToString:@"png"] ||
-                [extension isEqualToString:@"mp4"] ||
-                [extension isEqualToString:@"mov"] ||
-                [extension isEqualToString:@"m4v"]) {
-                [photos addObject:[NSArray arrayWithObjects:
-                                   [NSString stringWithUTF8String:item->path],
-                                   [NSString stringWithUTF8String:item->type], nil]];
-            } else if (OSIsMusicFile([NSString stringWithUTF8String:item->path])) {
-                [music addObject:[NSString stringWithUTF8String:item->path]];
-            } else {
-                os_logf(self, @"Kept in app: %s", item->name);
-            }
-        }
-
-        gSession.active = 0;
-        [self performSelectorOnMainThread:@selector(setSessionActiveFlag:)
-                               withObject:[NSNumber numberWithBool:NO]
-                            waitUntilDone:NO];
-        os_logf(self, @"Session complete");
-        [self performSelectorOnMainThread:@selector(endReceiveTransfer:)
-                               withObject:[NSArray arrayWithObject:
-                                           [NSNumber numberWithInt:OSTransferStateFinished]]
-                            waitUntilDone:NO];
-
-        if ([photos count] > 0 && !OSSaveToPhotosEnabled()) {
-            /* Save to Photos is off: keep them in the app only, and mark them handled so the
-               retry at the next launch leaves them alone too. */
-            for (NSArray *photo in photos) {
-                [self writeSavedMarkerForPath:[photo objectAtIndex:0]];
-            }
-            os_logf(self, @"Kept %d photo(s)/video(s) in the app (Save to Photos is off)", (int)[photos count]);
-        } else if ([photos count] > 0 && OSIsHeadless()) {
-            /* The app copies these into Photos the next time it is opened. */
-            os_logf(self, @"%d photo(s)/video(s) will go to Photos when OldSend is opened", (int)[photos count]);
-        } else if ([photos count] > 0) {
-            [self performSelectorOnMainThread:@selector(enqueuePhotoBatch:)
-                                   withObject:photos
-                                waitUntilDone:NO];
-        }
-        if ([music count] > 0 && !OSAddToMusicEnabled()) {
-            /* Add to Music is off: the songs stay in History, now and at later launches. */
-            for (NSString *song in music) {
-                [self writeSavedMarkerForPath:song];
-            }
-            os_logf(self, @"Kept %d song(s) in the app (Add to Music is off)", (int)[music count]);
-        } else if ([music count] > 0) {
-            /* The background service adds them too: it runs as mobile, like the app. */
-            [self enqueueMusic:music];
-        }
-        [self performSelectorOnMainThread:@selector(showReceivedTexts)
-                               withObject:nil
-                            waitUntilDone:NO];
-        if (receivedFileCount > 0) {
-            [self performSelectorOnMainThread:@selector(queueReceiveCompleteAlert:)
-                                   withObject:[NSNumber numberWithInt:receivedFileCount]
-                                waitUntilDone:NO];
-        }
-    }
+    if (gSession.remaining <= 0) [self finishReceiveSession];
     return 200;
 }
 
-- (void)photo:(UIImage *)image didFinishSavingWithError:(NSError *)error contextInfo:(void *)contextInfo {
-    NSUInteger token;
-    NSString *path;
-
-    [_photoCondition lock];
-    token = _photoActiveToken;
-    path = [[_photoActivePath retain] autorelease];
-    if (token == _photoSaveToken) {
-        _photoFinished = YES;
-        _photoSuccess = (error == nil);
+/* One file failed: that file only. LocalSend carries on with its next file, so the session does
+   too; if the sender has gone, the watchdog ends it. */
+- (int)uploadFailed:(OSFileEntry *)entry status:(int)status reason:(NSString *)reason {
+    os_logf(self, @"%@: %s", reason, entry->name);
+    if (gCancelReceive || !gSession.active) {
+        gSession.active = 0;
+        gSession.remaining = 0;
+        [self performSelectorOnMainThread:@selector(failReceivingFile)
+                               withObject:nil
+                            waitUntilDone:NO];
+        return status;
     }
-    [_photoCondition broadcast];
-    [_photoCondition unlock];
+    entry->uploaded = 1;
+    entry->failed = 1;
+    entry->path[0] = '\0';
+    gSession.remaining--;
+    [self performSelectorOnMainThread:@selector(receiveTransferEvent:)
+                           withObject:[NSArray arrayWithObjects:@"fail",
+                                       [NSNumber numberWithInt:entry->transferIndex], nil]
+                        waitUntilDone:NO];
+    [self performSelectorOnMainThread:@selector(fileFailedDuringReceive)
+                           withObject:nil
+                        waitUntilDone:NO];
+    if (gSession.remaining <= 0) [self finishReceiveSession];
+    return status;
+}
 
-    if (error != nil) {
-        os_logf(self, @"Photo save failed: %@", [error localizedDescription]);
-    } else {
-        os_logf(self, @"Saved to Photos");
+- (void)finishReceiveSession {
+    NSMutableArray *photos = [NSMutableArray array];
+    NSMutableArray *music = [NSMutableArray array];
+    int receivedFileCount = 0;
+    int failedFileCount = 0;
+    int j;
+
+    for (j = 0; j < gSession.count; j++) {
+        OSFileEntry *item = &gSession.files[j];
+        NSString *extension;
+
+        if (item->failed) failedFileCount++;
+        if (!item->uploaded || item->path[0] == '\0') continue;
+        receivedFileCount++;
+        extension = [[os_nsstring(item->path) pathExtension] lowercaseString];
+
+        if (strncmp(item->type, "image/", 6) == 0 ||
+            strncmp(item->type, "video/", 6) == 0 ||
+            [extension isEqualToString:@"jpg"] ||
+            [extension isEqualToString:@"jpeg"] ||
+            [extension isEqualToString:@"png"] ||
+            [extension isEqualToString:@"mp4"] ||
+            [extension isEqualToString:@"mov"] ||
+            [extension isEqualToString:@"m4v"]) {
+            [photos addObject:[NSArray arrayWithObjects:os_nsstring(item->path), os_nsstring(item->type), nil]];
+        } else if (OSIsMusicFile(os_nsstring(item->path)) || strncmp(item->type, "audio/", 6) == 0) {
+            [music addObject:os_nsstring(item->path)];
+        } else {
+            os_logf(self, @"Kept in app: %s", item->name);
+        }
     }
 
-    {
-        NSArray *result = [NSArray arrayWithObjects:
-                           [NSNumber numberWithBool:(error == nil)],
-                           path != nil ? path : @"",
-                           [NSNumber numberWithUnsignedInteger:token], nil];
-        [self performSelectorOnMainThread:@selector(photoSaveDidFinish:)
-                               withObject:result
+    gSession.active = 0;
+    if (failedFileCount > 0 && receivedFileCount == 0) {
+        /* Nothing arrived (messages aside): the same as a transfer that broke. */
+        [self performSelectorOnMainThread:@selector(failReceivingFile)
+                               withObject:nil
+                            waitUntilDone:NO];
+        os_logf(self, @"Session failed: none of %d file(s) arrived", failedFileCount);
+        return;
+    }
+    [self performSelectorOnMainThread:@selector(setSessionActiveFlag:)
+                           withObject:[NSNumber numberWithBool:NO]
+                        waitUntilDone:NO];
+    os_logf(self, @"Session complete (%d received, %d failed)", receivedFileCount, failedFileCount);
+    if ([photos count] > 0 && !OSSaveToPhotosEnabled()) {
+        /* Save to Photos is off: keep them in the app only, and mark them handled so the
+           retry at the next launch leaves them alone too. */
+        for (NSArray *photo in photos) {
+            [self writeSavedMarkerForPath:[photo objectAtIndex:0]];
+        }
+        os_logf(self, @"Kept %d photo(s)/video(s) in the app (Save to Photos is off)", (int)[photos count]);
+    } else if ([photos count] > 0) {
+        [self performSelectorOnMainThread:@selector(enqueuePhotoBatch:)
+                               withObject:photos
+                            waitUntilDone:NO];
+    }
+    if ([music count] > 0 && !OSAddToMusicEnabled()) {
+        /* Save to Music is off: the songs stay in History, now and at later launches. */
+        for (NSString *song in music) {
+            [self writeSavedMarkerForPath:song];
+        }
+        os_logf(self, @"Kept %d song(s) in the app (Save to Music is off)", (int)[music count]);
+    } else if ([music count] > 0) {
+        /* The background service adds them too: it runs as mobile, like the app. */
+        [self enqueueMusic:music];
+    }
+    [self performSelectorOnMainThread:@selector(endReceiveTransfer:)
+                           withObject:[NSArray arrayWithObjects:
+                                       [NSNumber numberWithInt:OSTransferStateFinished],
+                                       failedFileCount > 0
+                                           ? [NSString stringWithFormat:NSLocalizedString(@"transfer.some_failed", nil),
+                                              failedFileCount, receivedFileCount + failedFileCount]
+                                           : @"", nil]
+                        waitUntilDone:NO];
+
+    [self performSelectorOnMainThread:@selector(showReceivedTexts)
+                           withObject:nil
+                        waitUntilDone:NO];
+    if (receivedFileCount > 0) {
+        [self performSelectorOnMainThread:@selector(queueReceiveCompleteAlert:)
+                               withObject:[NSNumber numberWithInt:receivedFileCount]
                             waitUntilDone:NO];
     }
 }
@@ -3634,6 +3685,7 @@ cleanup:
     BOOL success = [[result objectAtIndex:0] boolValue];
     NSString *path = [result objectAtIndex:1];
 
+    _photosDone++;
     if (success && [path length] > 0) {
         /* One copy, like LocalSend: once it is in Photos, the copy in History goes. */
         [[NSFileManager defaultManager] removeItemAtPath:path error:NULL];
@@ -3657,10 +3709,13 @@ cleanup:
     if ([_photoQueue count] == 0) {
         _photoQueueRunning = NO;
         _savingCount = 0;
+        _photosTotal = 0;
+        _photosDone = 0;
         [self updateSavingStatus];
         [self showPendingReceiveCompleteAlert];
         return;
     }
+    [self updateSavingStatus];
 
     info = [[_photoQueue objectAtIndex:0] retain];
     [_photoQueue removeObjectAtIndex:0];
@@ -3713,6 +3768,7 @@ cleanup:
             }
             if (queued) continue;
             [_photoQueue addObject:info];
+            _photosTotal++;
             added = YES;
         }
     }
@@ -3720,8 +3776,9 @@ cleanup:
     if (added && !_photoQueueRunning) {
         _photoQueueRunning = YES;
         _savingCount = 1;
-        [self updateSavingStatus];
         [self saveNextPhoto];
+    } else if (added) {
+        [self updateSavingStatus];
     }
 }
 
@@ -3743,101 +3800,42 @@ cleanup:
                    [extension isEqualToString:@"mov"] ||
                    [extension isEqualToString:@"m4v"];
 
+    if (_photoLibrary == nil) _photoLibrary = [[ALAssetsLibrary alloc] init];
     if (isImage) {
-        UIImage *image = [[UIImage alloc] initWithContentsOfFile:path];
-        if (image == nil) {
-            [_photoCondition lock];
-            if (token == _photoSaveToken) {
-                _photoFinished = YES;
-                _photoSuccess = NO;
-            }
-            [_photoCondition broadcast];
-            [_photoCondition unlock];
-            os_logf(self, @"Image decode failed: %@", [path lastPathComponent]);
-            if (_photoQueueRunning) {
-                [self saveNextPhoto];
-            }
+        /* The file as it is, handed straight to the library: nothing decodes or re-encodes it,
+           which is what took the time (and kept UIImageWriteToSavedPhotosAlbum from keeping the
+           original). Mapped, not read into memory. */
+        NSData *data = [NSData dataWithContentsOfFile:path options:NSDataReadingMappedIfSafe error:NULL];
+        if (data == nil) {
+            [self libraryDidSavePath:path token:token error:[NSError errorWithDomain:@"OldSend" code:1 userInfo:nil]];
             return;
         }
         os_logf(self, @"Saving image to Photos: %@", [path lastPathComponent]);
-        UIImageWriteToSavedPhotosAlbum(image, self,
-                                       @selector(photo:didFinishSavingWithError:contextInfo:),
-                                       NULL);
-        [image release];
+        [_photoLibrary writeImageDataToSavedPhotosAlbum:data metadata:nil completionBlock:^(NSURL *url, NSError *error) {
+            [self libraryDidSavePath:path token:token error:error];
+        }];
     } else if (isVideo) {
         os_logf(self, @"Saving video to Photos: %@", [path lastPathComponent]);
-        UISaveVideoAtPathToSavedPhotosAlbum(path, self,
-                                            @selector(photo:didFinishSavingWithError:contextInfo:),
-                                            NULL);
+        [_photoLibrary writeVideoAtPathToSavedPhotosAlbum:[NSURL fileURLWithPath:path] completionBlock:^(NSURL *url, NSError *error) {
+            [self libraryDidSavePath:path token:token error:error];
+        }];
     } else {
-        [_photoCondition lock];
-        if (token == _photoSaveToken) {
-            _photoFinished = YES;
-            _photoSuccess = YES;
-        }
-        [_photoCondition broadcast];
-        [_photoCondition unlock];
         os_logf(self, @"Kept in app: %@", [path lastPathComponent]);
-        if (_photoQueueRunning) {
-            [self saveNextPhoto];
-        }
+        [self libraryDidSavePath:path token:token error:nil];
     }
 }
 
-- (BOOL)saveToPhotos:(NSString *)path type:(NSString *)type timeout:(NSTimeInterval)timeout {
-    NSString *extension = [[path pathExtension] lowercaseString];
-    NSString *lowerType = [type lowercaseString];
-    BOOL isImage = [lowerType hasPrefix:@"image/"] ||
-                   [extension isEqualToString:@"jpg"] ||
-                   [extension isEqualToString:@"jpeg"] ||
-                   [extension isEqualToString:@"png"];
-    BOOL isVideo = [lowerType hasPrefix:@"video/"] ||
-                   [extension isEqualToString:@"mp4"] ||
-                   [extension isEqualToString:@"mov"] ||
-                   [extension isEqualToString:@"m4v"];
+/* The library's answer, on the main thread. A file it refuses stays in History; the queue goes on. */
+- (void)libraryDidSavePath:(NSString *)path token:(NSUInteger)token error:(NSError *)error {
+    BOOL isCurrent = token == _photoSaveToken;
 
-    if (!isImage && !isVideo) {
-        os_logf(self, @"Kept in app: %@", [path lastPathComponent]);
-        return YES;
+    if (error != nil) {
+        os_logf(self, @"Not saved to Photos (%@): %@", [error localizedDescription], [path lastPathComponent]);
     }
-
-    [_photoCondition lock];
-    while (_photoSaveInProgress) {
-        [_photoCondition wait];
-    }
-    _photoSaveInProgress = YES;
-    _photoFinished = NO;
-    _photoSuccess = NO;
-    _photoSaveToken++;
-    _photoActiveToken = _photoSaveToken;
-    [_photoActivePath release];
-    _photoActivePath = [path copy];
-    [_photoCondition unlock];
-
-    {
-        NSArray *info = [NSArray arrayWithObjects:path, type,
-                         [NSNumber numberWithUnsignedInteger:_photoActiveToken], nil];
-        [self performSelectorOnMainThread:@selector(beginSaveToPhotos:)
-                               withObject:info
-                            waitUntilDone:NO];
-    }
-
-    [_photoCondition lock];
-    {
-        NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeout];
-        while (!_photoFinished && [deadline timeIntervalSinceNow] > 0) {
-            [_photoCondition waitUntilDate:deadline];
-        }
-    }
-    BOOL success = _photoFinished && _photoSuccess;
-    if (!_photoFinished) {
-        _photoSaveToken++;
-        os_logf(self, @"Photo save timed out: %@", [path lastPathComponent]);
-    }
-    _photoSaveInProgress = NO;
-    [_photoCondition broadcast];
-    [_photoCondition unlock];
-    return success;
+    if (!isCurrent) return;
+    [self photoSaveDidFinish:[NSArray arrayWithObjects:
+                              [NSNumber numberWithBool:(error == nil && [[NSFileManager defaultManager] fileExistsAtPath:path])],
+                              path, [NSNumber numberWithUnsignedInteger:token], nil]];
 }
 
 - (void)writeSavedMarkerForPath:(NSString *)path {
@@ -3901,7 +3899,7 @@ cleanup:
     [pool release];
 }
 
-#pragma mark Add to Music
+#pragma mark Save to Music
 
 - (void)postServerUpdate {
     [[NSNotificationCenter defaultCenter] postNotificationName:OSServerDidUpdateNotification object:self];
@@ -3914,7 +3912,10 @@ cleanup:
 
     @synchronized (_musicQueue) {
         for (NSString *path in paths) {
-            if (![_musicQueue containsObject:path]) [_musicQueue addObject:path];
+            if (![_musicQueue containsObject:path]) {
+                [_musicQueue addObject:path];
+                _musicTotal++;
+            }
         }
         if ([_musicQueue count] > 0 && !_musicThreadRunning) {
             _musicThreadRunning = YES;
@@ -3923,6 +3924,39 @@ cleanup:
     }
     if (start) {
         [NSThread detachNewThreadSelector:@selector(musicThreadMain) toTarget:self withObject:nil];
+    }
+    [self updateSavingStatus];
+}
+
+/* The queue is empty. Files that couldn't go are in History; say so rather than nothing. */
+- (void)musicQueueDidFinish {
+    NSArray *kept;
+
+    @synchronized (_musicQueue) {
+        kept = [[_musicKept copy] autorelease];
+        [_musicKept removeAllObjects];
+        _musicTotal = 0;
+        _musicDone = 0;
+    }
+    [self updateSavingStatus];
+    [self postServerUpdate];
+    [self showPendingReceiveCompleteAlert];
+    if ([kept count] == 0) return;
+    {
+        NSString *message = [kept count] == 1
+            ? [NSString stringWithFormat:NSLocalizedString(@"music.kept_message.one", nil), [kept objectAtIndex:0]]
+            : [NSString stringWithFormat:NSLocalizedString(@"music.kept_message", nil), (int)[kept count]];
+        if (OSIsHeadless()) {
+            OSDaemonNotify(message);
+        } else {
+            UIAlertView *alert = [[UIAlertView alloc] initWithTitle:NSLocalizedString(@"music.kept_title", nil)
+                                                            message:message
+                                                           delegate:nil
+                                                  cancelButtonTitle:NSLocalizedString(@"common.ok", nil)
+                                                  otherButtonTitles:nil];
+            [alert show];
+            [alert release];
+        }
     }
 }
 
@@ -3945,11 +3979,13 @@ cleanup:
             }
         }
         if (path == nil) {
+            [self performSelectorOnMainThread:@selector(musicQueueDidFinish) withObject:nil waitUntilDone:NO];
             [pool release];
             break;
         }
         if (![manager fileExistsAtPath:path] ||
             [manager fileExistsAtPath:[markerDirectory stringByAppendingPathComponent:[path lastPathComponent]]]) {
+            @synchronized (_musicQueue) { _musicDone++; }
             [pool release];
             continue;
         }
@@ -3963,8 +3999,10 @@ cleanup:
             os_logf(self, @"Kept in app (not added to Music: %@): %@", detail, [path lastPathComponent]);
             /* Don't try again at every launch. */
             if ([manager fileExistsAtPath:path]) [self writeSavedMarkerForPath:path];
+            @synchronized (_musicQueue) { [_musicKept addObject:[path lastPathComponent]]; }
         }
-        [self performSelectorOnMainThread:@selector(postServerUpdate) withObject:nil waitUntilDone:NO];
+        @synchronized (_musicQueue) { _musicDone++; }
+        [self performSelectorOnMainThread:@selector(updateSavingStatus) withObject:nil waitUntilDone:NO];
         [pool release];
     }
 }
@@ -4102,6 +4140,8 @@ cleanup:
     [_sendTransfer release];
     [_receiveTransfer release];
     [_musicQueue release];
+    [_musicKept release];
+    [_photoLibrary release];
     [super dealloc];
 }
 

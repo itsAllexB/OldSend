@@ -35,6 +35,9 @@ jobs:
           chmod +x "$HOME/.local/bin/ldid"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
+      - name: Check the strings
+        run: python3 tools/check_strings.py
+
       - name: Build
         run: bash ci/build-ios6.sh
 

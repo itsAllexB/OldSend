@@ -127,7 +127,7 @@
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    if (section == 0) return NSLocalizedString(@"settings.save_photos_footer", nil);
+    if (section == 0) return NSLocalizedString(@"settings.device_footer", nil);
     if (section == 1) return NSLocalizedString(@"settings.background_footer", nil);
     return NSLocalizedString(@"settings.credits_footer", nil);
 }
@@ -241,7 +241,16 @@ static NSString * const kOSCreditURLs[] = { nil, @"https://github.com/lihaoyun6/
                 cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
                                                reuseIdentifier:identifier] autorelease];
                 cell.selectionStyle = UITableViewCellSelectionStyleNone;
-                cell.textLabel.text = NSLocalizedString(@"settings.add_music", nil);
+                cell.textLabel.text = NSLocalizedString(@"settings.save_music", nil);
+                {
+                    /* The one real warning here, behind iOS's own info button. */
+                    UIButton *info = [UIButton buttonWithType:UIButtonTypeInfoDark];
+                    CGSize textSize = [cell.textLabel.text sizeWithFont:[UIFont boldSystemFontOfSize:17]];
+                    info.frame = CGRectMake(10 + textSize.width + 2, 0, 44, 44);
+                    [info addTarget:self action:@selector(saveMusicInfoTapped:)
+                   forControlEvents:UIControlEventTouchUpInside];
+                    [cell.contentView addSubview:info];
+                }
 
                 _musicSwitch = [[UISwitch alloc] init];
                 [_musicSwitch addTarget:self
@@ -386,6 +395,16 @@ forRowAtIndexPath:(NSIndexPath *)indexPath {
     [[NSUserDefaults standardUserDefaults] setBool:sender.on forKey:@"add_to_music"];
     [[NSUserDefaults standardUserDefaults] synchronize];
     [[OSDaemonClient shared] settingsChanged];
+}
+
+- (void)saveMusicInfoTapped:(id)sender {
+    UIAlertView *alert = [[UIAlertView alloc] initWithTitle:NSLocalizedString(@"settings.save_music", nil)
+                                                    message:NSLocalizedString(@"settings.save_music_info", nil)
+                                                   delegate:nil
+                                          cancelButtonTitle:NSLocalizedString(@"common.ok", nil)
+                                          otherButtonTitles:nil];
+    [alert show];
+    [alert release];
 }
 
 - (void)backgroundChanged:(UISwitch *)sender {

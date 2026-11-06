@@ -5,7 +5,7 @@
 - (void)mediaPickerDidCancel:(id)picker;
 @end
 
-@interface MediaPickerViewController : UIViewController <UITableViewDataSource, UITableViewDelegate> {
+@interface MediaPickerViewController : UIViewController <UITableViewDataSource, UITableViewDelegate, UIGestureRecognizerDelegate> {
     UITableView *_tableView;
     NSMutableArray *_assets;
     NSMutableArray *_loadingAssets;
@@ -15,10 +15,17 @@
     UILabel *_emptyLabel;
     id<MediaPickerDelegate> _delegate;
     BOOL _loading;
-    NSInteger _previewIndex;
-    BOOL _previewWasSelected;
     BOOL _exporting;
+    BOOL _openedAtNewest;
     UIView *_exportHUD;
+    /* Hold or slide to select many: see "Drag to select" in the .m. */
+    id _dragRecognizer;
+    BOOL _dragSelecting;
+    NSInteger _dragAnchor;
+    NSInteger _dragCurrent;
+    NSSet *_dragOriginal;
+    id _displayLink;
+    CFTimeInterval _lastTick;
 }
 
 @property (nonatomic, assign) id<MediaPickerDelegate> delegate;

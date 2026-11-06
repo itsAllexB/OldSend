@@ -1,11 +1,11 @@
 #import <Foundation/Foundation.h>
 
-/* Settings > Add to Music: move received songs into the Music app's library (default on). */
+/* Settings > Save to Music: move received songs into the Music app's library (default on). */
 BOOL OSAddToMusicEnabled(void);
 
-/* YES for the audio file types iOS 6 plays natively and the Music app can hold
-   (MP3, AAC/ALAC in .m4a, .m4b audiobooks, ADTS .aac, WAV, AIFF, CAF). FLAC, Ogg, Opus
-   and the like are not: they stay in History. Looks at the extension only. */
+/* YES for the audio file types the Music app can hold: MP3, AAC/ALAC in .m4a, .m4b audiobooks,
+   ADTS .aac, and WAV, AIFF and CAF (as they are if iOS plays them, as Apple Lossless if not).
+   FLAC, Ogg, Opus and the like are not: they stay in History. Looks at the extension only. */
 BOOL OSIsMusicFile(NSString *path);
 
 typedef enum {

@@ -7,7 +7,6 @@
     UILabel *_statusLabel;
     UIProgressView *_progressView;
     UILabel *_progressLabel;
-    UILabel *_footerLabel;
     BOOL _visible;
     BOOL _wifiBreathing;
     BOOL _wifiActive;

@@ -72,6 +72,7 @@ typedef enum {
 - (void)file:(NSInteger)index wrote:(long long)written;
 - (void)fileFinished:(NSInteger)index;
 - (void)fileSkipped:(NSInteger)index;
+- (void)fileFailed:(NSInteger)index;
 /* Ends the transfer; files still queued or running become skipped/failed. A finished transfer
    keeps its first end state, so a late failure after a cancel stays "cancelled". */
 - (void)endWithState:(OSTransferState)state message:(NSString *)message;

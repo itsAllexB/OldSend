@@ -5,3 +5,6 @@ BOOL OSIsPad(void);
 
 /* Small hint text: bold on iPad, regular on iPhone/iPod. */
 UIFont *OSSmallFont(CGFloat size);
+
+/* A localized format with a count in it: the key's ".one" form when the count is 1. */
+NSString *OSCountedString(NSString *key, NSInteger count);

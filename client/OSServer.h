@@ -26,10 +26,6 @@ BOOL OSSenderGaveUp(void);
     NSMutableArray *_devices;
     NSTimer *_announceTimer;
     void *_identity;
-    NSCondition *_photoCondition;
-    BOOL _photoSaveInProgress;
-    BOOL _photoFinished;
-    BOOL _photoSuccess;
     NSUInteger _photoSaveToken;
     NSUInteger _photoActiveToken;
     NSString *_photoActivePath;
@@ -61,6 +57,12 @@ BOOL OSSenderGaveUp(void);
     volatile BOOL _retryingPhotos;
     NSMutableArray *_musicQueue;
     BOOL _musicThreadRunning;
+    id _photoLibrary;
+    NSInteger _photosTotal;
+    NSInteger _photosDone;
+    NSInteger _musicTotal;
+    NSInteger _musicDone;
+    NSMutableArray *_musicKept;
 }
 
 + (OSServer *)shared;
@@ -78,9 +80,9 @@ BOOL OSSenderGaveUp(void);
 /* A request waiting for an answer, or a transfer running, in either direction. */
 - (BOOL)hasActiveSession;
 /* Copies received photos/videos not yet in Photos into Photos (if Save to Photos is on), and
-   adds received songs not yet in Music to Music (if Add to Music is on, also in the service). */
+   adds received songs not yet in Music to Music (if Save to Music is on, also in the service). */
 - (void)retryPendingPhotos;
-/* Adds received songs not yet in the Music app to it (if Add to Music is on). */
+/* Adds received songs not yet in the Music app to it (if Save to Music is on). */
 - (void)retryPendingMusic;
 - (void)announceNow;
 - (void)refreshDevices;
@@ -90,6 +92,10 @@ BOOL OSSenderGaveUp(void);
 - (NSString *)statusText;
 - (NSString *)receiveStatus;
 - (BOOL)isSavingToPhotos;
+/* While received files go into Photos or Music: "Saving to Photos… 3 of 15", and how far along
+   (0 to 1); nil and 0 otherwise. It doesn't hold anything up: History fills and empties as usual. */
+- (NSString *)savingText;
+- (float)savingProgress;
 - (BOOL)isReceiving;
 - (BOOL)isSessionActive;
 - (float)uploadProgress;

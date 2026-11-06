@@ -1,6 +1,7 @@
 #import "MediaPickerViewController.h"
 #import <AssetsLibrary/AssetsLibrary.h>
 #import <QuartzCore/QuartzCore.h>
+#import <UIKit/UIGestureRecognizerSubclass.h>
 #include <math.h>
 
 @protocol MediaSelectionCircle <NSObject>
@@ -19,6 +20,114 @@ static CGFloat MediaThumbSize(CGFloat width, NSInteger columns) {
     CGFloat gap = 8.0f;
     return floorf((width - (columns + 1) * gap) / columns);
 }
+
+#pragma mark - Drag to select
+
+/* The grid has no controls in it: a UIButton takes the touch for itself, so a finger laid on a
+   thumbnail couldn't scroll. Three recognizers on the table share every touch instead:
+     - a tap selects one thumbnail;
+     - a short hold on a thumbnail, or a slide mostly sideways from it, starts selecting a range;
+     - the table's own pan, which waits for that second one to fail: anything else is a scroll.
+   Behaviour and tuning are those of Photos Select, by the same author. */
+static const NSTimeInterval kMediaHoldDelay = 0.3;
+static const CGFloat kMediaSlop = 10.0f;
+static const CGFloat kMediaSidewaysRatio = 1.4f;   /* within about 35 degrees of horizontal */
+static const CGFloat kMediaEdgeZone = 54.0f;       /* points from the top or bottom of the grid */
+static const CGFloat kMediaMinSpeed = 80.0f;       /* points per second at the start of the zone */
+static const CGFloat kMediaMaxSpeed = 1400.0f;     /* at the edge, or past it */
+
+@interface MediaPickerViewController (DragSelect)
+- (BOOL)canStartDragAtPoint:(CGPoint)tablePoint;
+@end
+
+@interface MediaDragRecognizer : UIGestureRecognizer {
+    MediaPickerViewController *_picker;
+    NSTimer *_holdTimer;
+    CGPoint _startPoint;
+    CGPoint _currentPoint;
+}
+@property (nonatomic, assign) MediaPickerViewController *picker;
+@property (nonatomic, readonly) CGPoint startPoint;    /* window coordinates */
+@property (nonatomic, readonly) CGPoint currentPoint;  /* window coordinates */
+@end
+
+@implementation MediaDragRecognizer
+
+@synthesize picker = _picker, startPoint = _startPoint, currentPoint = _currentPoint;
+
+- (void)stopHoldTimer {
+    [_holdTimer invalidate];
+    _holdTimer = nil;
+}
+
+- (void)reset {
+    [super reset];
+    [self stopHoldTimer];
+}
+
+- (void)touchesBegan:(NSSet *)touches withEvent:(UIEvent *)event {
+    UITouch *touch = [touches anyObject];
+    UIScrollView *table = (UIScrollView *)self.view;
+
+    [super touchesBegan:touches withEvent:event];
+    /* A touch that stops a moving grid only stops it, as in Photos. */
+    if ([[event touchesForGestureRecognizer:self] count] != 1 || table.decelerating ||
+        ![_picker canStartDragAtPoint:[touch locationInView:table]]) {
+        self.state = UIGestureRecognizerStateFailed;
+        return;
+    }
+    _startPoint = _currentPoint = [touch locationInView:nil];
+    /* Common modes: the run loop may already be tracking the scroll view. */
+    _holdTimer = [NSTimer timerWithTimeInterval:kMediaHoldDelay target:self
+                                       selector:@selector(holdTimerFired:) userInfo:nil repeats:NO];
+    [[NSRunLoop mainRunLoop] addTimer:_holdTimer forMode:NSRunLoopCommonModes];
+}
+
+- (void)holdTimerFired:(NSTimer *)timer {
+    _holdTimer = nil;
+    if (self.state == UIGestureRecognizerStatePossible) self.state = UIGestureRecognizerStateBegan;
+}
+
+- (void)touchesMoved:(NSSet *)touches withEvent:(UIEvent *)event {
+    [super touchesMoved:touches withEvent:event];
+    _currentPoint = [[touches anyObject] locationInView:nil];
+    if (self.state == UIGestureRecognizerStatePossible) {
+        CGFloat dx = _currentPoint.x - _startPoint.x;
+        CGFloat dy = _currentPoint.y - _startPoint.y;
+        if (dx * dx + dy * dy < kMediaSlop * kMediaSlop) return;
+        self.state = fabsf(dx) > fabsf(dy) * kMediaSidewaysRatio ? UIGestureRecognizerStateBegan
+                                                                 : UIGestureRecognizerStateFailed;
+    } else if (self.state == UIGestureRecognizerStateBegan || self.state == UIGestureRecognizerStateChanged) {
+        self.state = UIGestureRecognizerStateChanged;
+    }
+}
+
+- (void)touchesEnded:(NSSet *)touches withEvent:(UIEvent *)event {
+    [super touchesEnded:touches withEvent:event];
+    if (self.state == UIGestureRecognizerStatePossible) {
+        self.state = UIGestureRecognizerStateFailed;
+    } else if (self.state == UIGestureRecognizerStateBegan || self.state == UIGestureRecognizerStateChanged) {
+        self.state = UIGestureRecognizerStateEnded;
+    }
+}
+
+- (void)touchesCancelled:(NSSet *)touches withEvent:(UIEvent *)event {
+    [super touchesCancelled:touches withEvent:event];
+    self.state = self.state == UIGestureRecognizerStatePossible ? UIGestureRecognizerStateFailed
+                                                                : UIGestureRecognizerStateCancelled;
+}
+
+/* Nothing else may stop this one once it has started. */
+- (BOOL)canBePreventedByGestureRecognizer:(UIGestureRecognizer *)other {
+    return NO;
+}
+
+- (void)dealloc {
+    [self stopHoldTimer];
+    [super dealloc];
+}
+
+@end
 
 @interface MediaVideoOverlayView : UIView {
     UILabel *_durationLabel;
@@ -112,11 +221,11 @@ static CGFloat MediaThumbSize(CGFloat width, NSInteger columns) {
 @end
 
 @interface MediaThumbCell : UITableViewCell {
-    UIButton *_buttons[8];
+    UIImageView *_thumbs[8];
     id _checkViews[8];
     id _videoOverlays[8];
 }
-- (UIButton *)buttonAtIndex:(NSInteger)index;
+- (UIImageView *)thumbAtIndex:(NSInteger)index;
 - (id)checkViewAtIndex:(NSInteger)index;
 - (id)videoOverlayAtIndex:(NSInteger)index;
 @end
@@ -129,13 +238,12 @@ static CGFloat MediaThumbSize(CGFloat width, NSInteger columns) {
         self.selectionStyle = UITableViewCellSelectionStyleNone;
 
         for (i = 0; i < 8; i++) {
-            UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
-            button.backgroundColor = [UIColor colorWithWhite:0.88f alpha:1.0f];
-            button.clipsToBounds = YES;
-            button.layer.borderColor = [UIColor colorWithRed:0.12f green:0.42f blue:0.80f alpha:1.0f].CGColor;
-            button.adjustsImageWhenHighlighted = NO;
-            [self.contentView addSubview:button];
-            _buttons[i] = [button retain];
+            UIImageView *thumb = [[UIImageView alloc] initWithFrame:CGRectZero];
+            thumb.backgroundColor = [UIColor colorWithWhite:0.88f alpha:1.0f];
+            thumb.clipsToBounds = YES;
+            thumb.contentMode = UIViewContentModeScaleAspectFill;
+            [self.contentView addSubview:thumb];
+            _thumbs[i] = thumb;
 
             {
                 MediaVideoOverlayView *overlay = [[MediaVideoOverlayView alloc] initWithFrame:CGRectZero];
@@ -159,9 +267,9 @@ static CGFloat MediaThumbSize(CGFloat width, NSInteger columns) {
     return self;
 }
 
-- (UIButton *)buttonAtIndex:(NSInteger)index {
+- (UIImageView *)thumbAtIndex:(NSInteger)index {
     if (index < 0 || index >= 8) return nil;
-    return _buttons[index];
+    return _thumbs[index];
 }
 
 - (id)checkViewAtIndex:(NSInteger)index {
@@ -184,20 +292,18 @@ static CGFloat MediaThumbSize(CGFloat width, NSInteger columns) {
 
     for (i = 0; i < 8; i++) {
         if (i < columns) {
-            _buttons[i].hidden = NO;
-            _buttons[i].frame = CGRectMake(gap + i * (thumb + gap), gap, thumb, thumb);
-            _buttons[i].imageView.contentMode = UIViewContentModeScaleAspectFill;
+            _thumbs[i].frame = CGRectMake(gap + i * (thumb + gap), gap, thumb, thumb);
             if (_videoOverlays[i] != nil) {
-                [(UIView *)_videoOverlays[i] setFrame:_buttons[i].frame];
+                [(UIView *)_videoOverlays[i] setFrame:_thumbs[i].frame];
             }
             if (_checkViews[i] != nil) {
-                [(UIView *)_checkViews[i] setFrame:CGRectMake(CGRectGetMaxX(_buttons[i].frame) - 36.0f,
-                                                              CGRectGetMaxY(_buttons[i].frame) - 36.0f,
+                [(UIView *)_checkViews[i] setFrame:CGRectMake(CGRectGetMaxX(_thumbs[i].frame) - 36.0f,
+                                                              CGRectGetMaxY(_thumbs[i].frame) - 36.0f,
                                                               36.0f, 36.0f)];
                 [self.contentView bringSubviewToFront:(UIView *)_checkViews[i]];
             }
         } else {
-            _buttons[i].hidden = YES;
+            _thumbs[i].hidden = YES;
             if (_videoOverlays[i] != nil) [(UIView *)_videoOverlays[i] setHidden:YES];
             if (_checkViews[i] != nil) [(UIView *)_checkViews[i] setHidden:YES];
         }
@@ -207,7 +313,7 @@ static CGFloat MediaThumbSize(CGFloat width, NSInteger columns) {
 - (void)dealloc {
     NSInteger i;
     for (i = 0; i < 8; i++) {
-        [_buttons[i] release];
+        [_thumbs[i] release];
         [(id)_videoOverlays[i] release];
         [(id)_checkViews[i] release];
     }
@@ -231,10 +337,23 @@ static CGFloat MediaThumbSize(CGFloat width, NSInteger columns) {
     _tableView.delegate = self;
     _tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
     _tableView.backgroundColor = [UIColor whiteColor];
-    _tableView.delaysContentTouches = NO;
-    _tableView.canCancelContentTouches = YES;
+    _tableView.allowsSelection = NO;
     _tableView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [view addSubview:_tableView];
+    {
+        MediaDragRecognizer *drag = [[MediaDragRecognizer alloc] initWithTarget:self action:@selector(dragSelect:)];
+        UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(thumbTapped:)];
+
+        drag.picker = self;
+        drag.delaysTouchesEnded = NO;
+        [_tableView addGestureRecognizer:drag];
+        [_tableView.panGestureRecognizer requireGestureRecognizerToFail:drag];
+        tap.delegate = self;
+        [tap requireGestureRecognizerToFail:drag];
+        [_tableView addGestureRecognizer:tap];
+        _dragRecognizer = drag;
+        [tap release];
+    }
 
     _emptyLabel = [[UILabel alloc] initWithFrame:CGRectMake(20, 120, frame.size.width - 40, 60)];
     _emptyLabel.backgroundColor = [UIColor clearColor];
@@ -263,7 +382,6 @@ static CGFloat MediaThumbSize(CGFloat width, NSInteger columns) {
 
     _assets = [[NSMutableArray alloc] init];
     _selectedIndexes = [[NSMutableSet alloc] init];
-    _previewIndex = -1;
 
     UIBarButtonItem *cancel = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemCancel
                                                                            target:self
@@ -287,6 +405,31 @@ static CGFloat MediaThumbSize(CGFloat width, NSInteger columns) {
     _emptyLabel.frame = CGRectMake(20, self.view.bounds.size.height * 0.4f,
                                    self.view.bounds.size.width - 40, 60);
     _spinner.center = CGPointMake(self.view.bounds.size.width / 2, self.view.bounds.size.height / 2);
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    [self openAtNewest];
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    [self stopAutoscroll];
+}
+
+/* Like Photos: the oldest at the top, opening at the bottom with the newest. Once only, and not
+   before the grid has its real size. */
+- (void)openAtNewest {
+    NSInteger rows;
+
+    if (_openedAtNewest || _loading || self.view.window == nil) return;
+    rows = [self tableView:_tableView numberOfRowsInSection:0];
+    if (rows == 0) return;
+    _openedAtNewest = YES;
+    [_tableView layoutIfNeeded];
+    [_tableView scrollToRowAtIndexPath:[NSIndexPath indexPathForRow:rows - 1 inSection:0]
+                      atScrollPosition:UITableViewScrollPositionBottom
+                              animated:NO];
 }
 
 - (BOOL)shouldAutorotateToInterfaceOrientation:(UIInterfaceOrientation)orientation {
@@ -388,6 +531,7 @@ static CGFloat MediaThumbSize(CGFloat width, NSInteger columns) {
 
     _emptyLabel.hidden = ([_assets count] > 0);
     [_tableView reloadData];
+    [self openAtNewest];
     [self updateDoneButton];
 
     if (gActiveMediaPicker == self) {
@@ -434,13 +578,9 @@ static CGFloat MediaThumbSize(CGFloat width, NSInteger columns) {
 
     columns = MediaColumns(tableView.bounds.size.width);
     for (i = 0; i < 8; i++) {
-        UIButton *button = [cell buttonAtIndex:i];
+        UIImageView *thumb = [cell thumbAtIndex:i];
         id check = [cell checkViewAtIndex:i];
         NSInteger assetIndex = indexPath.row * columns + i;
-
-        [button removeTarget:nil action:NULL forControlEvents:UIControlEventAllEvents];
-        button.backgroundColor = [UIColor clearColor];
-        button.layer.borderWidth = 0.0f;
 
         if (i < columns && assetIndex < (NSInteger)[_assets count]) {
             ALAsset *asset = [_assets objectAtIndex:assetIndex];
@@ -449,21 +589,8 @@ static CGFloat MediaThumbSize(CGFloat width, NSInteger columns) {
             BOOL selected = [_selectedIndexes containsObject:
                              [NSNumber numberWithInteger:assetIndex]];
 
-            button.hidden = NO;
-            button.tag = assetIndex;
-            [button setBackgroundImage:image forState:UIControlStateNormal];
-            [button addTarget:self
-                       action:@selector(thumbTouchDown:)
-             forControlEvents:UIControlEventTouchDown];
-            [button addTarget:self
-                       action:@selector(thumbTouchUp:)
-             forControlEvents:UIControlEventTouchUpInside];
-            [button addTarget:self
-                       action:@selector(thumbTouchCancel:)
-             forControlEvents:UIControlEventTouchCancel | UIControlEventTouchDragExit];
-            [button addTarget:self
-                       action:@selector(thumbTouchEnter:)
-             forControlEvents:UIControlEventTouchDragEnter];
+            thumb.hidden = NO;
+            thumb.image = image;
             {
                 id overlay = [cell videoOverlayAtIndex:i];
                 BOOL isVideo = [[asset valueForProperty:ALAssetPropertyType]
@@ -481,9 +608,8 @@ static CGFloat MediaThumbSize(CGFloat width, NSInteger columns) {
                 [(id<MediaSelectionCircle>)check setChecked:selected];
             }
         } else {
-            button.hidden = YES;
-            button.tag = -1;
-            [button setBackgroundImage:nil forState:UIControlStateNormal];
+            thumb.hidden = YES;
+            thumb.image = nil;
             {
                 id overlay = [cell videoOverlayAtIndex:i];
                 if (overlay != nil) [overlay setHidden:YES];
@@ -508,47 +634,171 @@ static CGFloat MediaThumbSize(CGFloat width, NSInteger columns) {
     }
 }
 
-- (void)thumbTouchDown:(UIButton *)sender {
-    NSNumber *key = [NSNumber numberWithInteger:sender.tag];
+/* The thumbnail under a point in the table, or -1. Each thumbnail owns the gaps around it, so a
+   finger between two still means one of them. With `nearest`, a point past the last thumbnail,
+   above the first row or below the last still gives one, so a range follows the finger smoothly. */
+- (NSInteger)assetIndexAtPoint:(CGPoint)point nearest:(BOOL)nearest {
+    CGFloat width = _tableView.bounds.size.width;
+    NSInteger count = (NSInteger)[_assets count];
+    NSInteger columns = MediaColumns(width);
+    CGFloat gap = 8.0f;
+    CGFloat thumb = MediaThumbSize(width, columns);
+    CGFloat rowHeight = thumb + 16.0f;
+    NSInteger row, column, index;
 
-    _previewIndex = sender.tag;
-    _previewWasSelected = [_selectedIndexes containsObject:key];
-    [self setCheckForIndex:_previewIndex selected:!_previewWasSelected];
+    if (count == 0) return -1;
+    if (point.y < 0.0f) return nearest ? 0 : -1;
+    row = (NSInteger)(point.y / rowHeight);
+    if (row >= (count + columns - 1) / columns) return nearest ? count - 1 : -1;
+    column = (NSInteger)floorf((point.x - gap / 2.0f) / (thumb + gap));
+    if (column < 0) column = 0;
+    if (column >= columns) column = columns - 1;
+    index = row * columns + column;
+    if (index >= count) return nearest ? count - 1 : -1;
+    return index;
 }
 
-- (void)thumbTouchUp:(UIButton *)sender {
-    NSNumber *key = [NSNumber numberWithInteger:sender.tag];
+- (void)setIndex:(NSInteger)index selected:(BOOL)selected {
+    NSNumber *key = [NSNumber numberWithInteger:index];
 
-    if (sender.tag == _previewIndex) {
-        if (_previewWasSelected) {
-            [_selectedIndexes removeObject:key];
-        } else {
-            [_selectedIndexes addObject:key];
-        }
-        [self setCheckForIndex:sender.tag selected:!_previewWasSelected];
-        _previewIndex = -1;
-        [self updateDoneButton];
+    if ([_selectedIndexes containsObject:key] == selected) return;
+    if (selected) {
+        [_selectedIndexes addObject:key];
+    } else {
+        [_selectedIndexes removeObject:key];
+    }
+    [self setCheckForIndex:index selected:selected];
+}
+
+- (void)thumbTapped:(UITapGestureRecognizer *)tap {
+    NSInteger index = [self assetIndexAtPoint:[tap locationInView:_tableView] nearest:NO];
+
+    if (index < 0) return;
+    [self setIndex:index selected:![_selectedIndexes containsObject:[NSNumber numberWithInteger:index]]];
+    [self updateDoneButton];
+}
+
+/* A tap that stops a moving grid only stops it. */
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)recognizer shouldReceiveTouch:(UITouch *)touch {
+    return !_tableView.decelerating;
+}
+
+- (BOOL)canStartDragAtPoint:(CGPoint)tablePoint {
+    return [self assetIndexAtPoint:tablePoint nearest:NO] >= 0;
+}
+
+/* Everything from the first thumbnail to the one under the finger, in reading order, takes the
+   first one's new state; thumbnails the range leaves go back to how they were. */
+- (void)dragToIndex:(NSInteger)index {
+    NSInteger oldLow, oldHigh, newLow, newHigh, low, high, i;
+
+    if (index < 0 || index == _dragCurrent) return;
+    oldLow = _dragCurrent < 0 ? _dragAnchor : MIN(_dragAnchor, _dragCurrent);
+    oldHigh = _dragCurrent < 0 ? _dragAnchor : MAX(_dragAnchor, _dragCurrent);
+    newLow = MIN(_dragAnchor, index);
+    newHigh = MAX(_dragAnchor, index);
+    low = MIN(oldLow, newLow);
+    high = MAX(oldHigh, newHigh);
+    for (i = low; i <= high; i++) {
+        BOOL inRange = i >= newLow && i <= newHigh;
+        /* Only what entered or left the range: a long selection must not cost more per frame. */
+        if (_dragCurrent >= 0 && inRange && i >= oldLow && i <= oldHigh) continue;
+        [self setIndex:i selected:inRange ? _dragSelecting
+                                          : [_dragOriginal containsObject:[NSNumber numberWithInteger:i]]];
+    }
+    _dragCurrent = index;
+    [self updateDoneButton];
+}
+
+- (void)dragSelect:(MediaDragRecognizer *)recognizer {
+    switch (recognizer.state) {
+        case UIGestureRecognizerStateBegan: {
+            NSInteger start = [self assetIndexAtPoint:[_tableView convertPoint:recognizer.startPoint fromView:nil]
+                                              nearest:NO];
+            [_dragOriginal release];
+            _dragOriginal = nil;
+            if (start < 0) return;
+            _dragOriginal = [_selectedIndexes copy];
+            _dragSelecting = ![_dragOriginal containsObject:[NSNumber numberWithInteger:start]];
+            _dragAnchor = start;
+            _dragCurrent = -1;
+            [self dragToIndex:start];
+        }   /* fall through: the finger may have moved on already */
+        case UIGestureRecognizerStateChanged:
+            if (_dragOriginal == nil) return;
+            [self dragToIndex:[self assetIndexAtPoint:[_tableView convertPoint:recognizer.currentPoint fromView:nil]
+                                              nearest:YES]];
+            [self updateAutoscroll];
+            break;
+        default:
+            [self stopAutoscroll];
+            [_dragOriginal release];
+            _dragOriginal = nil;
+            break;
     }
 }
 
-- (void)thumbTouchCancel:(UIButton *)sender {
-    if (sender.tag == _previewIndex) {
-        [self setCheckForIndex:_previewIndex selected:_previewWasSelected];
-        _previewIndex = -1;
+/* Near the top or bottom of the grid it scrolls, faster closer to the edge, and the selection
+   keeps following. Gentle at the start of the zone, quick at the edge. */
+- (CGFloat)autoscrollSpeed {
+    CGPoint point = [_tableView convertPoint:[(MediaDragRecognizer *)_dragRecognizer currentPoint] fromView:nil];
+    CGFloat top = _tableView.contentOffset.y;
+    CGFloat bottom = top + _tableView.bounds.size.height;
+    CGFloat zone = MIN(kMediaEdgeZone, (bottom - top) / 4.0f);
+    CGFloat depth, sign;
+
+    if (point.y < top + zone) {
+        depth = (top + zone - point.y) / zone;
+        sign = -1.0f;
+    } else if (point.y > bottom - zone) {
+        depth = (point.y - (bottom - zone)) / zone;
+        sign = 1.0f;
+    } else {
+        return 0.0f;
+    }
+    if (depth > 1.0f) depth = 1.0f;
+    return sign * (kMediaMinSpeed + (kMediaMaxSpeed - kMediaMinSpeed) * depth * depth);
+}
+
+- (void)updateAutoscroll {
+    if ([self autoscrollSpeed] == 0.0f) {
+        [self stopAutoscroll];
+    } else if (_displayLink == nil) {
+        /* The link retains self; stopAutoscroll always runs when the finger lifts. */
+        _displayLink = [[CADisplayLink displayLinkWithTarget:self selector:@selector(autoscrollTick:)] retain];
+        [_displayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+        _lastTick = 0;
     }
 }
 
-- (void)thumbTouchEnter:(UIButton *)sender {
-    if (sender.tag == _previewIndex) {
-        [self setCheckForIndex:_previewIndex selected:!_previewWasSelected];
-    }
+- (void)stopAutoscroll {
+    [_displayLink invalidate];
+    [_displayLink release];
+    _displayLink = nil;
 }
 
-- (void)scrollViewWillBeginDragging:(UIScrollView *)scrollView {
-    if (_previewIndex >= 0) {
-        [self setCheckForIndex:_previewIndex selected:_previewWasSelected];
-        _previewIndex = -1;
+- (void)autoscrollTick:(CADisplayLink *)link {
+    CGFloat speed = [self autoscrollSpeed];
+    CFTimeInterval now = link.timestamp;
+    CFTimeInterval step = _lastTick > 0 ? MIN(now - _lastTick, 0.05) : link.duration;
+    CGFloat maxY = MAX(0.0f, _tableView.contentSize.height - _tableView.bounds.size.height);
+    CGFloat y;
+    CGFloat scale = [UIScreen mainScreen].scale;
+
+    if (speed == 0.0f) {
+        [self stopAutoscroll];
+        return;
     }
+    _lastTick = now;
+    y = _tableView.contentOffset.y + speed * (CGFloat)step;
+    y = MAX(0.0f, MIN(maxY, y));
+    /* Whole pixels, so thumbnails stay sharp while scrolling. */
+    y = roundf(y * scale) / scale;
+    if (y == _tableView.contentOffset.y) return;
+    [_tableView setContentOffset:CGPointMake(_tableView.contentOffset.x, y) animated:NO];
+    [self dragToIndex:[self assetIndexAtPoint:[_tableView convertPoint:[(MediaDragRecognizer *)_dragRecognizer currentPoint]
+                                                              fromView:nil]
+                                      nearest:YES]];
 }
 
 - (void)cancelTapped:(id)sender {
@@ -759,6 +1009,8 @@ static NSString *MediaExtensionForUTI(NSString *uti, BOOL video) {
     gActiveGroup = nil;
     [gActiveFilter release];
     gActiveFilter = nil;
+    [_dragRecognizer release];
+    [_dragOriginal release];
     [_tableView release];
     [_assets release];
     [_loadingAssets release];

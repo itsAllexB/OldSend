@@ -301,7 +301,7 @@ didEndEditingRowAtIndexPath:(NSIndexPath *)indexPath {
 
     {
         NSString *message = [NSString stringWithFormat:
-                             NSLocalizedString(@"files.delete_confirm_message", nil),
+                             OSCountedString(@"files.delete_confirm_message", selected),
                              (int)selected];
         UIAlertView *alert = [[UIAlertView alloc] initWithTitle:NSLocalizedString(@"files.delete_confirm_title", nil)
                                                         message:message

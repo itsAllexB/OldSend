@@ -192,6 +192,13 @@ NSString *OSFormatDuration(NSTimeInterval seconds) {
     [self changed];
 }
 
+- (void)fileFailed:(NSInteger)index {
+    OSTransferFile *file = [self fileAt:index];
+    if (file == nil || ![self isActive]) return;
+    file.state = OSTransferFileFailed;
+    [self changed];
+}
+
 - (void)endWithState:(OSTransferState)state message:(NSString *)message {
     if (![self isActive]) return;
     _state = state;

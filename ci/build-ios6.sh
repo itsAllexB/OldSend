@@ -16,7 +16,7 @@ OUT=build-ios6
 APP="$OUT/OldSend.app"
 OBJ="$OUT/obj"
 rm -rf "$OUT" packages
-mkdir -p "$OBJ" "$APP/en.lproj" "$APP/zh_CN.lproj" packages
+mkdir -p "$OBJ" "$APP/en.lproj" "$APP/ro.lproj" "$APP/zh_CN.lproj" packages
 
 CFLAGS=(-target "armv7-apple-ios$MIN" -isysroot "$SDK" -O2 -marm -mno-thumb
         -fno-objc-arc -fno-stack-protector -fno-modules
@@ -33,7 +33,8 @@ done
 "$CC" "${CFLAGS[@]}" "${objs[@]}" \
     -framework UIKit -framework Foundation -framework QuartzCore \
     -framework CoreGraphics -framework SystemConfiguration \
-    -framework AVFoundation -framework QuickLook -framework MediaPlayer -framework MobileCoreServices \
+    -framework AVFoundation -framework AudioToolbox -framework AssetsLibrary \
+    -framework QuickLook -framework MediaPlayer -framework MobileCoreServices \
     -o "$APP/OldSend"
 
 # The media picker lives in its own library, as upstream: the app loads it at run time when the
@@ -61,6 +62,7 @@ for f in client/Icon*.png client/Tab*.png client/ReceiveWifiLarge*.png client/De
     [ -f "$f" ] && cp "$f" "$APP/"
 done
 cp client/en.lproj/Localizable.strings "$APP/en.lproj/"
+cp client/ro.lproj/Localizable.strings "$APP/ro.lproj/"
 cp client/zh_CN.lproj/Localizable.strings "$APP/zh_CN.lproj/"
 chmod 755 "$APP/OldSend" "$APP/MediaPicker.dylib"
 find "$APP" -type f ! -name OldSend ! -name MediaPicker.dylib -exec chmod 644 {} +

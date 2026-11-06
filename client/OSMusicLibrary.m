@@ -1,5 +1,6 @@
 #import "OSMusicLibrary.h"
 #import <AVFoundation/AVFoundation.h>
+#import <AudioToolbox/AudioToolbox.h>
 #import <objc/runtime.h>
 
 #include <dlfcn.h>
@@ -13,7 +14,7 @@
 #include <unistd.h>
 
 /*
- * Add to Music.
+ * Save to Music.
  *
  * iOS 6 has no public API for adding songs to the Music app. On iOS 5 and 6 every process that
  * writes the library (the iTunes Store's itunesstored for downloads, the Music app for edits)
@@ -271,6 +272,92 @@ static NSMutableDictionary *os_track_properties(AVURLAsset *asset, NSString *nam
     return values;
 }
 
+/* PCM that iOS 6 won't play, such as a 24-bit 96 kHz WAV: the same sound as Apple Lossless, which it
+   will. Every sample is kept at up to 24 bits; above 48 kHz it becomes 48 kHz, the most the iPhone's
+   audio hardware puts out. Returns the new .m4a in .tmp beside the original, or nil. */
+static NSString *os_lossless_copy(NSString *source, NSString **reason) {
+    NSString *folder = [[source stringByDeletingLastPathComponent] stringByAppendingPathComponent:@".tmp"];
+    NSString *target = [folder stringByAppendingPathComponent:
+                        [NSString stringWithFormat:@"music-%u.m4a", (unsigned)arc4random()]];
+    ExtAudioFileRef input = NULL, output = NULL;
+    AudioStreamBasicDescription inputFormat, outputFormat, clientFormat;
+    UInt32 size = sizeof inputFormat;
+    OSStatus status;
+    void *buffer = NULL;
+    BOOL ok = NO;
+    const UInt32 chunkFrames = 16384;
+
+    [[NSFileManager defaultManager] createDirectoryAtPath:folder withIntermediateDirectories:YES attributes:nil error:NULL];
+    status = ExtAudioFileOpenURL((CFURLRef)[NSURL fileURLWithPath:source], &input);
+    if (status != noErr) goto done;
+    status = ExtAudioFileGetProperty(input, kExtAudioFileProperty_FileDataFormat, &size, &inputFormat);
+    if (status != noErr) goto done;
+    if (inputFormat.mChannelsPerFrame < 1 || inputFormat.mChannelsPerFrame > 2) {
+        status = kAudioFormatUnsupportedDataFormatError;
+        goto done;
+    }
+
+    memset(&outputFormat, 0, sizeof outputFormat);
+    outputFormat.mFormatID = kAudioFormatAppleLossless;
+    outputFormat.mSampleRate = MIN(inputFormat.mSampleRate, 48000.0);
+    outputFormat.mChannelsPerFrame = inputFormat.mChannelsPerFrame;
+    outputFormat.mFramesPerPacket = 4096;
+    outputFormat.mFormatFlags = inputFormat.mBitsPerChannel > 0 && inputFormat.mBitsPerChannel <= 16
+                              ? kAppleLosslessFormatFlag_16BitSourceData : kAppleLosslessFormatFlag_24BitSourceData;
+    status = ExtAudioFileCreateWithURL((CFURLRef)[NSURL fileURLWithPath:target], kAudioFileM4AType, &outputFormat,
+                                       NULL, kAudioFileFlags_EraseFile, &output);
+    if (status != noErr) goto done;
+
+    /* 32-bit float holds 24-bit samples exactly. */
+    memset(&clientFormat, 0, sizeof clientFormat);
+    clientFormat.mFormatID = kAudioFormatLinearPCM;
+    clientFormat.mFormatFlags = kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked | kAudioFormatFlagsNativeEndian;
+    clientFormat.mSampleRate = inputFormat.mSampleRate;
+    clientFormat.mChannelsPerFrame = inputFormat.mChannelsPerFrame;
+    clientFormat.mBitsPerChannel = 32;
+    clientFormat.mFramesPerPacket = 1;
+    clientFormat.mBytesPerFrame = 4 * clientFormat.mChannelsPerFrame;
+    clientFormat.mBytesPerPacket = clientFormat.mBytesPerFrame;
+    status = ExtAudioFileSetProperty(input, kExtAudioFileProperty_ClientDataFormat, sizeof clientFormat, &clientFormat);
+    if (status != noErr) goto done;
+    status = ExtAudioFileSetProperty(output, kExtAudioFileProperty_ClientDataFormat, sizeof clientFormat, &clientFormat);
+    if (status != noErr) goto done;
+
+    buffer = malloc(chunkFrames * clientFormat.mBytesPerFrame);
+    if (buffer == NULL) goto done;
+    for (;;) {
+        UInt32 frames = chunkFrames;
+        AudioBufferList list;
+        list.mNumberBuffers = 1;
+        list.mBuffers[0].mNumberChannels = clientFormat.mChannelsPerFrame;
+        list.mBuffers[0].mDataByteSize = chunkFrames * clientFormat.mBytesPerFrame;
+        list.mBuffers[0].mData = buffer;
+        status = ExtAudioFileRead(input, &frames, &list);
+        if (status != noErr) goto done;
+        if (frames == 0) break;
+        status = ExtAudioFileWrite(output, frames, &list);
+        if (status != noErr) goto done;
+    }
+    ok = YES;
+
+done:
+    if (buffer != NULL) free(buffer);
+    if (input != NULL) ExtAudioFileDispose(input);
+    if (output != NULL) {
+        OSStatus closed = ExtAudioFileDispose(output);
+        if (closed != noErr) {
+            ok = NO;
+            status = closed;
+        }
+    }
+    if (!ok) {
+        [[NSFileManager defaultManager] removeItemAtPath:target error:NULL];
+        if (reason != NULL) *reason = [NSString stringWithFormat:@"can't convert it (error %d)", (int)status];
+        return nil;
+    }
+    return target;
+}
+
 /* A free iTunes-style name in iTunes_Control/Music/F00..F49, e.g. F07/QZMB.mp3. */
 static NSString *os_music_destination(NSString *mediaFolder, NSString *extension) {
     NSFileManager *manager = [NSFileManager defaultManager];
@@ -304,6 +391,7 @@ static OSMusicResult os_add_locked(NSString *path, NSString **detail) {
     NSFileManager *manager = [NSFileManager defaultManager];
     NSString *name = [path lastPathComponent];
     NSString *extension = [[path pathExtension] lowercaseString];
+    NSString *original = nil;  /* a converted copy is being added; this is the received file */
     Class libraryClass, importClass, importerClass, trackClass;
     id library, trackImport, importer;
     AVURLAsset *asset;
@@ -325,8 +413,21 @@ static OSMusicResult os_add_locked(NSString *path, NSString **detail) {
     }
 
     asset = [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:path] options:nil];
+    if ([[asset tracksWithMediaType:AVMediaTypeVideo] count] == 0 && ![asset isPlayable]) {
+        NSString *reason = nil;
+        NSString *converted = os_lossless_copy(path, &reason);
+        if (converted == nil) {
+            *detail = [NSString stringWithFormat:@"iOS can't play it as audio, and %@", reason];
+            return OSMusicNotSupported;
+        }
+        original = path;
+        path = converted;
+        extension = @"m4a";
+        asset = [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:path] options:nil];
+    }
     if (![asset isPlayable] || [[asset tracksWithMediaType:AVMediaTypeAudio] count] == 0 ||
         [[asset tracksWithMediaType:AVMediaTypeVideo] count] > 0) {
+        if (original != nil) [manager removeItemAtPath:path error:NULL];
         *detail = @"iOS can't play it as audio";
         return OSMusicNotSupported;
     }
@@ -339,6 +440,7 @@ static OSMusicResult os_add_locked(NSString *path, NSString **detail) {
     if (library == nil || importClass == Nil || importerClass == Nil ||
         ![importClass instancesRespondToSelector:@selector(setValue:forEntityProperty:)] ||
         ![importerClass instancesRespondToSelector:@selector(importTrack:withCompletionBlock:)]) {
+        if (original != nil) [manager removeItemAtPath:path error:NULL];
         *detail = @"MusicLibrary.framework is not available";
         return OSMusicFailed;
     }
@@ -347,12 +449,14 @@ static OSMusicResult os_add_locked(NSString *path, NSString **detail) {
 
     destination = os_music_destination([libraryClass mediaFolderPath] ?: @"/var/mobile/Media", extension);
     if (destination == nil) {
+        if (original != nil) [manager removeItemAtPath:path error:NULL];
         *detail = @"can't create a folder in iTunes_Control/Music";
         return OSMusicFailed;
     }
     /* Move (same volume, so no second copy and no extra space); copy only if that fails. */
     if (rename([path fileSystemRepresentation], [destination fileSystemRepresentation]) != 0) {
         if (![manager copyItemAtPath:path toPath:destination error:NULL]) {
+            if (original != nil) [manager removeItemAtPath:path error:NULL];
             *detail = [NSString stringWithFormat:@"can't move the file (%s)", strerror(errno)];
             return OSMusicFailed;
         }
@@ -395,8 +499,11 @@ static OSMusicResult os_add_locked(NSString *path, NSString **detail) {
         success = [trackClass trackWithPersistentID:persistentID existsInLibrary:library];
     }
     if (!success || persistentID == 0) {
-        /* Not in the library: the file goes back to History. */
-        if (copied) {
+        /* Not in the library: the file goes back to History (a converted copy just goes). */
+        if (original != nil) {
+            [manager removeItemAtPath:destination error:NULL];
+            [manager removeItemAtPath:path error:NULL];
+        } else if (copied) {
             [manager removeItemAtPath:destination error:NULL];
         } else if (rename([destination fileSystemRepresentation], [path fileSystemRepresentation]) != 0) {
             [manager copyItemAtPath:destination toPath:path error:NULL];
@@ -425,6 +532,7 @@ static OSMusicResult os_add_locked(NSString *path, NSString **detail) {
     }
 
     if (copied) [manager removeItemAtPath:path error:NULL];
+    if (original != nil) [manager removeItemAtPath:original error:NULL];
     /* The library posts this itself when the change is committed; post it now as well so
        the Music app refreshes even if this process is suspended right after. */
     notify_post([[@"com.apple.mobileipod.librarychanged-" stringByAppendingString:

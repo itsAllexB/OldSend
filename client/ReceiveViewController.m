@@ -64,16 +64,6 @@
     _progressLabel.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     [view addSubview:_progressLabel];
 
-    _footerLabel = [[UILabel alloc] initWithFrame:CGRectMake(20, frame.size.height - 36,
-                                                             frame.size.width - 40, 24)];
-    _footerLabel.backgroundColor = [UIColor clearColor];
-    _footerLabel.font = OSSmallFont(11);
-    _footerLabel.textAlignment = UITextAlignmentCenter;
-    _footerLabel.textColor = [UIColor colorWithWhite:0.55f alpha:1.0f];
-    _footerLabel.text = NSLocalizedString(@"receive.footer", nil);
-    _footerLabel.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleTopMargin;
-    [view addSubview:_footerLabel];
-
     self.view = view;
     [view release];
 
@@ -101,14 +91,12 @@
         _progressView.frame = CGRectMake((width - progressWidth) / 2, nameY + 104,
                                          progressWidth, 12);
         _progressLabel.frame = CGRectMake(40, nameY + 124, width - 80, 20);
-        _footerLabel.frame = CGRectMake(20, height - 44, width - 40, 24);
 
         _nameLabel.font = [UIFont boldSystemFontOfSize:34];
         _nameLabel.minimumFontSize = 20;
         _statusLabel.font = OSSmallFont(16);
         _statusLabel.minimumFontSize = 12;
         _progressLabel.font = OSSmallFont(14);
-        _footerLabel.font = OSSmallFont(13);
     } else {
         _wifiView.image = [UIImage imageNamed:@"ReceiveWifiLarge.png"];
         _wifiBlueView.image = [UIImage imageNamed:@"ReceiveWifiLargeBlue.png"];
@@ -118,14 +106,12 @@
         _statusLabel.frame = CGRectMake(20, 246, width - 40, 20);
         _progressView.frame = CGRectMake(30, 274, width - 60, 9);
         _progressLabel.frame = CGRectMake(20, 288, width - 40, 16);
-        _footerLabel.frame = CGRectMake(20, height - 36, width - 40, 24);
 
         _nameLabel.font = [UIFont boldSystemFontOfSize:23];
         _nameLabel.minimumFontSize = 14;
         _statusLabel.font = OSSmallFont(12);
         _statusLabel.minimumFontSize = 9;
         _progressLabel.font = OSSmallFont(11);
-        _footerLabel.font = OSSmallFont(11);
     }
 }
 
@@ -349,7 +335,7 @@ static UILabel *os_info_label(CGRect frame, NSString *text, UIColor *color, BOOL
 - (void)refresh {
     OSServer *server = [OSServer shared];
     NSString *alias = [server alias];
-    BOOL active = [server isSessionActive] || [server isReceiving] || [server isSavingToPhotos];
+    BOOL active = [server isSessionActive] || [server isReceiving] || [server savingText] != nil;
 
     _wifiActive = active;
     if (!_visible) {
@@ -362,11 +348,12 @@ static UILabel *os_info_label(CGRect frame, NSString *text, UIColor *color, BOOL
     _statusLabel.text = [server receiveStatus];
 
     {
-        BOOL receiving = [server isSessionActive] || [server isReceiving];
+        BOOL saving = [server savingText] != nil;
+        BOOL receiving = [server isSessionActive] || [server isReceiving] || saving;
         _progressView.hidden = !receiving;
         _progressLabel.hidden = !receiving;
         if (receiving) {
-            float progress = [server uploadProgress];
+            float progress = saving ? [server savingProgress] : [server uploadProgress];
             _progressView.progress = progress;
             _progressLabel.text = [NSString stringWithFormat:@"%d%%",
                                    (int)(progress * 100.0f)];
@@ -384,7 +371,6 @@ static UILabel *os_info_label(CGRect frame, NSString *text, UIColor *color, BOOL
     [_statusLabel release];
     [_progressView release];
     [_progressLabel release];
-    [_footerLabel release];
     [_infoOverlay release];
     [super dealloc];
 }
