@@ -335,7 +335,7 @@ static NSString *os_device_icon(NSString *type) {
     if (saving) {
         /* The bar now counts what has gone into Photos or Music. */
         progress = [[OSServer shared] savingProgress];
-    } else if (_transfer.state == OSTransferStateFinished) {
+    } else if (_transfer.state == OSTransferStateFinished && [_transfer.message length] == 0) {
         stateColor = [UIColor colorWithRed:0.10f green:0.55f blue:0.20f alpha:1.0f];
     } else if (!active) {
         stateColor = [UIColor colorWithRed:0.80f green:0.15f blue:0.15f alpha:1.0f];

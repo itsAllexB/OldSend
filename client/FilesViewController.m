@@ -9,7 +9,6 @@
 #import <MobileCoreServices/MobileCoreServices.h>
 #include <math.h>
 
-#define OS_RECEIVED_PATH @"/var/mobile/Library/OldSend/Received"
 
 @interface FileCell : UITableViewCell {
     SelectionCircleView *_checkView;
