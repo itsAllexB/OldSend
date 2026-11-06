@@ -1753,7 +1753,7 @@ static void os_apply_transfer_event(OSTransfer *transfer, NSArray *event) {
         return;
     }
     if (_receiving || _savingCount > 0) return;
-    if ([NSDate timeIntervalSinceReferenceDate] - _lastReceiveActivity > 20.0) {  /* weak Wi-Fi: slow handshakes between files */
+    if ([NSDate timeIntervalSinceReferenceDate] - _lastReceiveActivity > 60.0) {  /* weak Wi-Fi: slow handshakes between files */
         gSession.active = 0;
         gSession.remaining = 0;
         [self failReceivingFile];
@@ -1985,7 +1985,11 @@ static void os_apply_transfer_event(OSTransfer *transfer, NSArray *event) {
     [snapshot release];
 }
 
+/* Every LocalSend nearby answers an announcement by opening a TLS connection here, and this server
+   handles one connection at a time: during a transfer those answers would queue ahead of the next
+   file, for nothing, since the sender already knows us. */
 - (void)announceTimerFired:(NSTimer *)timer {
+    if (gSession.active) return;
     [self announceNow];
 }
 
@@ -2245,8 +2249,8 @@ static void os_apply_transfer_event(OSTransfer *transfer, NSArray *event) {
     }
 
     [self announceNow];
-    /* The background service announces once a minute: peers that scan get an answer anyway. */
-    _announceTimer = [[NSTimer scheduledTimerWithTimeInterval:OSIsHeadless() ? 60.0 : 5.0
+    /* Rarely: peers announce themselves when they start, and those that scan get an answer anyway. */
+    _announceTimer = [[NSTimer scheduledTimerWithTimeInterval:OSIsHeadless() ? 60.0 : 30.0
                                                       target:self
                                                     selector:@selector(announceTimerFired:)
                                                     userInfo:nil
@@ -2485,7 +2489,9 @@ static int os_open_discovery_socket(OSServer *server, BOOL log) {
     int ret;
 
     setsockopt(clientFD, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
-    tv.tv_sec = 5;
+    /* Long enough for a Wi-Fi stall, short enough for a connection that never talks not to hold up
+       the (single-threaded) server for long. */
+    tv.tv_sec = 15;
     tv.tv_usec = 0;
     setsockopt(clientFD, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
     setsockopt(clientFD, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
@@ -4075,11 +4081,11 @@ cleanup:
 
     if (strncmp(request.path, "/api/localsend/v2/upload", 24) == 0) {
         int status;
-        /* Connections get 5 s per read so an idle one cannot hold up the (single-threaded)
-           server, but a file upload over weak Wi-Fi can stall for longer and still finish. */
+        /* A file upload over weak Wi-Fi can stall for longer and still finish: the phone's link
+           has been seen to go quiet for most of a minute. */
         if (ssl->p_bio != NULL) {
             struct timeval tv;
-            tv.tv_sec = 20;
+            tv.tv_sec = 60;
             tv.tv_usec = 0;
             setsockopt(*(int *)ssl->p_bio, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
         }
