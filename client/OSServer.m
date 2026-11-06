@@ -3503,6 +3503,11 @@ cleanup:
                                 waitUntilDone:NO];
             return 500;
         }
+        /* A new file: a "handled" marker left by an earlier file of the same name (one deleted
+           outside History) must not keep this one from going to Photos or Music. */
+        [[NSFileManager defaultManager] removeItemAtPath:
+            [[@OS_RECEIVED_DIR stringByAppendingPathComponent:@".saved"]
+             stringByAppendingPathComponent:[finalPath lastPathComponent]] error:NULL];
 
         entry->uploaded = 1;
         snprintf(entry->path, sizeof entry->path, "%s", [finalPath fileSystemRepresentation]);
