@@ -1,11 +1,11 @@
 #
 <p align="center">
 <img src="./client/Icon@2x.png" width="96" />
-<h1 align="center">OldSend 2.1.2</h1>
+<h1 align="center">OldSend 2.1.3</h1>
 <h3 align="center">A native LocalSend-compatible client for jailbroken iOS 6 devices</h3>
 </p>
 
-OldSend 2.1.2 is my version of [OldSend by lihaoyun6](https://github.com/lihaoyun6/OldSend), the native [LocalSend](https://localsend.org) client for old iPhones, made for iOS 6 on Retina iPhones (tested on an iPhone 4S, iOS 6.1.3). Send files, photos, videos, links and text between an old iPhone and any device running LocalSend.
+OldSend 2.1.3 is my version of [OldSend by lihaoyun6](https://github.com/lihaoyun6/OldSend), the native [LocalSend](https://localsend.org) client for old iPhones, made for iOS 6 on Retina iPhones (tested on an iPhone 4S, iOS 6.1.3). Send files, photos, videos, links and text between an old iPhone and any device running LocalSend.
 
 ![OldSend](preview.png)
 

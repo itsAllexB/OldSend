@@ -50,7 +50,8 @@ BOOL OSSenderGaveUp(void);
     NSMutableArray *_receivedTexts;
     NSTimer *_receiveWatchdog;
     NSTimeInterval _lastReceiveActivity;
-    volatile NSUInteger _networkGeneration;
+    volatile NSUInteger _networkGeneration;   /* discovery socket */
+    volatile NSUInteger _listenerGeneration;  /* TCP listener */
     OSTransfer *_sendTransfer;
     OSTransfer *_receiveTransfer;
     volatile BOOL _paused;
@@ -75,6 +76,7 @@ BOOL OSSenderGaveUp(void);
 - (void)stop;
 /* Call when the app returns to the foreground: reopens the sockets iOS may have reclaimed. */
 - (void)resume;
+- (void)networkChanged;
 /* Paused: no listening, discovery or announcements (the app and the background service hand
    the port to each other this way). */
 - (void)setPaused:(BOOL)paused;

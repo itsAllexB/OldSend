@@ -2347,9 +2347,32 @@ static int os_open_discovery_socket(OSServer *server, BOOL log) {
     }
     /* The network threads reopen their sockets when they see a new generation. */
     _networkGeneration++;
+    _listenerGeneration++;
     os_logf(self, @"Reopening sockets (back in the foreground, or the network changed)");
     [self announceNow];
     [[NSNotificationCenter defaultCenter] postNotificationName:OSServerDidUpdateNotification object:self];
+}
+
+/* iOS posts about 25 of these in 13 s when Wi-Fi joins. Each announcement makes every LocalSend
+   nearby open a connection to answer it, and closing a listening socket resets whoever is waiting
+   in it, so a sender could fail just after a join. One response, once it has settled. */
+- (void)networkChanged {
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(networkSettled) object:nil];
+    [self performSelector:@selector(networkSettled) withObject:nil afterDelay:1.5];
+}
+
+- (void)networkSettled {
+    NSString *ip = [OSServer localIPAddress];
+
+    if (!_running || _paused) return;
+    if (ip != nil && ![ip isEqualToString:_localIP]) {
+        [self resume];
+        return;
+    }
+    /* Same address: the listener, bound to any address, still works. Multicast is joined again. */
+    _networkGeneration++;
+    os_logf(self, @"Network changed, same address");
+    [self announceNow];
 }
 
 - (void)setPaused:(BOOL)paused {
@@ -2358,6 +2381,7 @@ static int os_open_discovery_socket(OSServer *server, BOOL log) {
     os_logf(self, paused ? @"Paused" : @"Serving");
     if (!paused) {
         _networkGeneration++;
+        _listenerGeneration++;
         [self announceNow];
     }
 }
@@ -2416,7 +2440,7 @@ static int os_open_discovery_socket(OSServer *server, BOOL log) {
 
     /* iOS reclaims the sockets of a suspended app, after which accept() fails for good. So the
        listening socket is opened again whenever it fails, and whenever the app comes back to the
-       foreground (resume bumps _networkGeneration); select() with a timeout lets the loop notice. */
+       foreground (resume bumps _listenerGeneration); select() with a timeout lets the loop notice. */
     int listenFD = -1;
     NSUInteger generation = 0;
     int failures = 0;
@@ -2439,9 +2463,9 @@ static int os_open_discovery_socket(OSServer *server, BOOL log) {
             sleep(1);
             continue;
         }
-        if (listenFD < 0 || generation != _networkGeneration) {
+        if (listenFD < 0 || generation != _listenerGeneration) {
             if (listenFD >= 0) close(listenFD);
-            generation = _networkGeneration;
+            generation = _listenerGeneration;
             listenFD = os_open_listener(self, failures == 0);
             if (listenFD < 0) {
                 failures++;

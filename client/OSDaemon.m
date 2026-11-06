@@ -249,7 +249,7 @@ int OSDaemonMain(void) {
     });
     /* Joined another network (or lost it): reopen the sockets, rejoin multicast, announce. */
     notify_register_dispatch("com.apple.system.config.network_change", &token, dispatch_get_main_queue(), ^(int t) {
-        [server resume];
+        [server networkChanged];
     });
 
     [NSTimer scheduledTimerWithTimeInterval:3.0 target:service selector:@selector(tick:) userInfo:nil repeats:YES];
@@ -281,7 +281,7 @@ int OSDaemonMain(void) {
             [self serviceChanged];
         });
         notify_register_dispatch("com.apple.system.config.network_change", &token, dispatch_get_main_queue(), ^(int t) {
-            if (![[OSServer shared] isPaused]) [[OSServer shared] resume];
+            [[OSServer shared] networkChanged];
         });
     }
     return self;
