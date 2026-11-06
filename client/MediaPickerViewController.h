@@ -1,3 +1,4 @@
+/* Changed by itsAllexB from OldSend by lihaoyun6; the changes are in the git history. */
 #import <UIKit/UIKit.h>
 
 @protocol MediaPickerDelegate <NSObject>

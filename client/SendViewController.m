@@ -1,3 +1,4 @@
+/* Changed by itsAllexB from OldSend by lihaoyun6; the changes are in the git history. */
 #import "SendViewController.h"
 #import "OSServer.h"
 #import "OSPlatform.h"
@@ -591,7 +592,7 @@
     }
 
     if (mediaCount > 0 && fileCount == 0 && textCount == 0) {
-        return [NSString stringWithFormat:NSLocalizedString(@"send.pending_media", nil),
+        return [NSString stringWithFormat:OSCountedString(@"send.pending_media", mediaCount),
                 mediaCount, [self formatBytes:mediaBytes]];
     }
     if (fileCount > 0 && mediaCount == 0 && textCount == 0) {
@@ -613,7 +614,7 @@
 
         if (mediaCount > 0) {
             [parts addObject:[NSString stringWithFormat:
-                              NSLocalizedString(@"send.count_media", nil), mediaCount]];
+                              OSCountedString(@"send.count_media", mediaCount), mediaCount]];
         }
         if (fileCount > 0) {
             [parts addObject:[NSString stringWithFormat:

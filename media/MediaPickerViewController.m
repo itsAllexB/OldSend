@@ -1,3 +1,4 @@
+/* Changed by itsAllexB from OldSend by lihaoyun6; the changes are in the git history. */
 #import "MediaPickerViewController.h"
 #import <AssetsLibrary/AssetsLibrary.h>
 #import <QuartzCore/QuartzCore.h>
@@ -70,6 +71,12 @@ static const CGFloat kMediaMaxSpeed = 1400.0f;     /* at the edge, or past it */
     UIScrollView *table = (UIScrollView *)self.view;
 
     [super touchesBegan:touches withEvent:event];
+    /* A second finger during a drag changes nothing. Failing here would end the drag with no last
+       callback, and the edge scrolling would run on by itself. */
+    if (self.state != UIGestureRecognizerStatePossible) {
+        for (UITouch *extra in touches) [self ignoreTouch:extra forEvent:event];
+        return;
+    }
     /* A touch that stops a moving grid only stops it, as in Photos. */
     if ([[event touchesForGestureRecognizer:self] count] != 1 || table.decelerating ||
         ![_picker canStartDragAtPoint:[touch locationInView:table]]) {

@@ -1,11 +1,11 @@
 #
 <p align="center">
 <img src="./client/Icon@2x.png" width="96" />
-<h1 align="center">OldSend 2.1.1</h1>
+<h1 align="center">OldSend 2.1.2</h1>
 <h3 align="center">A native LocalSend-compatible client for jailbroken iOS 6 devices</h3>
 </p>
 
-OldSend 2.1.1 is my version of [OldSend by lihaoyun6](https://github.com/lihaoyun6/OldSend), the native [LocalSend](https://localsend.org) client for old iPhones, made for iOS 6 on Retina iPhones (tested on an iPhone 4S, iOS 6.1.3). Send files, photos, videos, links and text between an old iPhone and any device running LocalSend.
+OldSend 2.1.2 is my version of [OldSend by lihaoyun6](https://github.com/lihaoyun6/OldSend), the native [LocalSend](https://localsend.org) client for old iPhones, made for iOS 6 on Retina iPhones (tested on an iPhone 4S, iOS 6.1.3). Send files, photos, videos, links and text between an old iPhone and any device running LocalSend.
 
 ![OldSend](preview.png)
 
@@ -16,7 +16,7 @@ OldSend 2.1.1 is my version of [OldSend by lihaoyun6](https://github.com/lihaoyu
 - **OldSend in the share sheet of every app.** A small MobileSubstrate add-on (`share/`) puts an OldSend button into the iOS 6 share sheet (Safari, Photos and any app using `UIActivityViewController`); links, text, photos, videos and files shared with it open in OldSend's Send tab, ready to send. OldSend also appears under "Open in…" for any file.
 - **Run in Background** (Settings, off by default): a background service (the same binary, started by launchd at boot, `client/OSDaemon.m`) keeps the phone discoverable and able to receive with OldSend closed. Incoming requests show a notification banner (and "Received …" when files arrive), kept in Notification Center until the request is answered; tapping it opens OldSend with the Accept / Decline prompt and the live transfer screen. OldSend has its own entry in Settings > Notifications, like any app. The app and the service hand the port to each other automatically, the service follows Wi-Fi network changes, and it keeps the phone awake only while files are coming in. While the phone sleeps, iOS pauses it like any app, so it costs no battery while waiting.
 - **Send anything**: photos, videos, text, the clipboard, links and any file, with a built-in filesystem browser. Tapping a device with nothing chosen opens the choices.
-- **A media picker that feels like Photos**: it opens at the newest. Tap a thumbnail to select it; hold one for a moment, or slide sideways from it, then drag to select or deselect a range, with the grid scrolling at the top and bottom edges (faster closer to the edge). Any other move scrolls, also starting on a thumbnail. Same feel and tuning as [Photos Select](https://github.com/itsAllexB/PhotosSelect-iOS6).
+- **A media picker that feels like Photos**: it opens at the newest. Tap a thumbnail to select it; hold one for a moment, or slide sideways from it, then drag to select or deselect a range, with the grid scrolling at the top and bottom edges (faster closer to the edge). Any other move scrolls, also starting on a thumbnail. Same feel and tuning as Photos Select in the Photos app.
 - **Receive** into History, with **Save to Photos** in Settings: on, received photos and videos are moved into Photos (one copy, like LocalSend), with the image data as it arrived (not decoded or re-encoded; the library adds a small header to JPEGs); off, they stay in History. This happens at once also with OldSend closed: the background service saves them too, once OldSend has been allowed to use Photos. The transfer screen and the Receive page show "Saving to Photos… 3 of 15", and the app stays usable meanwhile. Quick Save accepts incoming files without asking. One failed file costs only that file: the others still arrive.
 - **Save to Music** (Settings, on by default): received songs that iOS 6 plays natively (MP3, AAC and Apple Lossless in `.m4a`, `.m4b` audiobooks, `.aac`, WAV, AIFF, CAF) are moved into the Music app, with their tags and artwork, and show up under Songs, Artists and Albums. WAV, AIFF or CAF that iOS 6 won't play, such as 24-bit 96 kHz, go in as Apple Lossless (see Known limitations). OldSend uses the iPhone's own music library code (MusicLibrary.framework's importer, the one the iTunes Store uses for downloads), so the library database stays consistent; if anything fails, the song stays in History and OldSend says so. FLAC, Ogg, Opus and other formats iOS 6 can't play stay in History the same way. The background service adds songs too. **If you sync music with iTunes, read the iTunes sync note under Known limitations first: iTunes can delete songs added this way.**
 - **History opens what you received**: songs and videos play in iOS's own full-screen player (Done, AirPlay and the full-screen toggle work as in iOS's apps), and photos, PDFs, documents and text open in Quick Look, like Mail's attachments, with "Open in…" in the share button. Files neither can show get the file info as before.
@@ -66,6 +66,6 @@ Upstream's `build.sh` (macOS, iPhoneOS 3.1.3 SDK, armv6) is still in the reposit
 - [cJSON](https://github.com/DaveGamble/cJSON) — MIT
 - Icons drawn from [Material Icons](https://github.com/google/material-design-icons) — Apache-2.0
 
-OldSend is licensed under Apache-2.0, like the original; files changed from upstream are listed in the git history.
+OldSend is licensed under Apache-2.0, like the original. Source files changed from upstream say so at the top, and the git history has every change.
 
 > OldSend is an independent project and is not affiliated with the LocalSend project.

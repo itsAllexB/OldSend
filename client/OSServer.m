@@ -1,3 +1,4 @@
+/* Changed by itsAllexB from OldSend by lihaoyun6; the changes are in the git history. */
 #import "OSPlatform.h"
 #import "OSServer.h"
 #import <AssetsLibrary/AssetsLibrary.h>
@@ -1193,7 +1194,8 @@ static void os_apply_transfer_event(OSTransfer *transfer, NSArray *event) {
     [_publishTimer invalidate];
     [_publishTimer release];
     _publishTimer = nil;
-    OSDaemonHoldAwake(NO);
+    /* Saving goes on after the transfer: if the phone slept now, it would wait for the next wake. */
+    OSDaemonHoldAwake([self savingText] != nil);
     if (transfer.state == OSTransferStateFinished) {
         OSDaemonNotify([NSString stringWithFormat:OSCountedString(@"daemon.received", [transfer finishedFileCount]),
                         (int)[transfer finishedFileCount], transfer.peerAlias]);
@@ -3675,7 +3677,7 @@ cleanup:
                            withObject:[NSArray arrayWithObjects:
                                        [NSNumber numberWithInt:OSTransferStateFinished],
                                        failedFileCount > 0
-                                           ? [NSString stringWithFormat:NSLocalizedString(@"transfer.some_failed", nil),
+                                           ? [NSString stringWithFormat:OSCountedString(@"transfer.some_failed", failedFileCount),
                                               failedFileCount, receivedFileCount + failedFileCount]
                                            : @"", nil]
                         waitUntilDone:NO];
