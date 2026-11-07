@@ -40,6 +40,16 @@ OldSend 2.1.4 is my version of [OldSend by lihaoyun6](https://github.com/lihaoyu
 - **Music can show only some of several new songs until it's relaunched.** After receiving several songs with Save to Music, Music listed only 1 of 3 until it was closed and reopened.
 - If SpringBoard restarts while a request is waiting, its "Tap to accept" notification stays in Notification Center after you answer; clear it by hand.
 
+## Guards
+
+Each request is handled inside `@try`: an exception costs that request and its session, the sender gets a 500, and the app carries on.
+
+With this toolchain (an LLVM 19 snapshot, armv7, SjLj exceptions) a typed `@catch` on its own, `@catch (id e)` included, only catches a call in two cases: the call is the first one in the function's first block, after inlining, or a local variable, `@synchronized` or a C++ destructor is in scope around it. For any other call, LLVM stores "no landing pad" just before it and the exception goes straight past the handler (a bug fixed upstream in [LLVM #117656](https://github.com/llvm/llvm-project/pull/117656), which this toolchain doesn't have).
+
+These guards hold today, because each call has a local in scope or comes first. That's fragile: a small edit can lose it. `tools/check-guards.pl` runs in CI and applies LLVM's own test to the compiler's final IR, so a call that loses its landing pad fails the build. The cure then is a `@catch (...)` after the typed one, which keeps the landing pad and leaves the typed `@catch` working.
+
+**Tested** on 2.1.4 with a real exception forced on the emulator (iOS 6.1.3), in `-handleUpload:request:identity:`. That request got a 500, the app stayed up, and the next request got a 200.
+
 ## Installation
 
 Add the **ios-legacy** source to Cydia, `https://itsallexb.github.io/ios-legacy/`, and install OldSend (package `com.itsallexb.oldsend`; it replaces lihaoyun6's `com.lihaoyun6.oldsend` if that is installed). Or download the `.deb` from this repository's releases and install it with `dpkg -i`.
