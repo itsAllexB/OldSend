@@ -68,7 +68,7 @@ Upstream's `build.sh` (macOS, iPhoneOS 3.1.3 SDK, armv6) is still in the reposit
 
 - **[lihaoyun6](https://github.com/lihaoyun6)** made [OldSend](https://github.com/lihaoyun6/OldSend), which this is built on: the native UI, the LocalSend implementation on mbedTLS, the media picker and the file browser. Thank you!
 - **The [LocalSend](https://localsend.org) team** created LocalSend and its open protocol, which is what lets an iPhone from 2011 talk to today's phones and computers. Thank you!
-- OldSend 2.0 and 2.1 changes and the new app icon by [itsAllexB](https://github.com/itsAllexB). The share-sheet button uses the shapes of LocalSend's logo. The credits are in the app too, under Settings > About.
+- OldSend 2.0 and 2.1 changes and the new app icon by [AllexB](https://github.com/itsAllexB). The share-sheet button uses the shapes of LocalSend's logo. The credits are in the app too, under Settings > About.
 
 ## Third-party
 

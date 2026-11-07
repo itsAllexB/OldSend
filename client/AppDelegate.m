@@ -1,4 +1,4 @@
-/* Changed by itsAllexB from OldSend by lihaoyun6; the changes are in the git history. */
+/* Changed by AllexB from OldSend by lihaoyun6; the changes are in the git history. */
 #import "AppDelegate.h"
 #include <string.h>
 #include <netinet/in.h>
