@@ -2366,13 +2366,15 @@ static int os_open_discovery_socket(OSServer *server, BOOL log) {
 
     if (!_running || _paused) return;
     if (ip != nil && ![ip isEqualToString:_localIP]) {
-        [self resume];
-        return;
+        [_localIP release];
+        _localIP = [ip copy];
     }
-    /* Same address: the listener, bound to any address, still works. Multicast is joined again. */
+    /* The listener is bound to any address, so it still works, and it reopens by itself if it fails.
+       Reopening it here would reset a sender waiting in it. Multicast is joined again. */
     _networkGeneration++;
-    os_logf(self, @"Network changed, same address");
+    os_logf(self, @"Network changed, now on %@", _localIP);
     [self announceNow];
+    [[NSNotificationCenter defaultCenter] postNotificationName:OSServerDidUpdateNotification object:self];
 }
 
 - (void)setPaused:(BOOL)paused {
