@@ -55,3 +55,14 @@ jobs:
         with:
           name: deb
           path: packages/*.deb
+
+      # Last, so the package above is there even if this fails. See "Guards" in the README.
+      - name: Check that every @catch can be reached
+        run: |
+          mkdir -p guards-ir
+          for src in client/*.m media/*.m share/*.m; do
+            "$THEOS/toolchain/linux/iphone/bin/clang" -target armv7-apple-ios6.0 -isysroot "$THEOS/sdks/iPhoneOS9.3.sdk" \
+              -O2 -marm -mno-thumb -fno-objc-arc -fblocks -fno-modules -Iclient -Ishare -Ivendor -Ivendor/mbedtls/include \
+              -Wno-deprecated-declarations -S -emit-llvm "$src" -o "guards-ir/$(basename "$src").ll"
+          done
+          perl tools/check-guards.pl guards-ir/*.ll
